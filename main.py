@@ -107,7 +107,7 @@ async def get_number_and_country(page):
     return None, None
 
 # =======================
-# PROCESS USER INPUT (FINAL CORRECTED with 1.5s SCRAPING WAIT)
+# PROCESS USER INPUT (FINAL CORRECTED with 1s POST-CLICK WAIT)
 # =======================
 async def process_user_input(page, user_id, prefix):
     try:
@@ -125,14 +125,14 @@ async def process_user_input(page, user_id, prefix):
         # 3. Klik Get Number
         await page.click("#getNumberBtn")
 
-        # 4. Jeda 0.2 detik
-        await asyncio.sleep(0.2) 
+        # 4. Jeda 1 detik (Perubahan yang diminta)
+        await asyncio.sleep(1) 
 
         # 5. Refresh halaman dan tunggu load penuh (State 'load')
         await page.reload()
         await page.wait_for_load_state("load") 
 
-        # 6. Jeda 1.5 detik sebelum scraping (Perubahan yang Diminta)
+        # 6. Jeda 1.5 detik sebelum scraping
         await asyncio.sleep(1.5) 
 
         # 7. Scrape nomor & negara terbaru (Percobaan Pertama)
