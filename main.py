@@ -3,7 +3,7 @@ import json
 import os
 import requests
 import time
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # =======================
 # CONFIG
@@ -26,7 +26,7 @@ waiting_range = set()
 waiting_admin_input = set() # NEW
 pending_message = {}  # user_id -> message_id Telegram sementara
 sent_numbers = set()
-# otp_state: {number: {"user_id": int, "range": str, "message": str, "timestamp": float}}
+# otp_state: {number: {"user_id": int, "range": str, "message": str, "timestamp": float, "country": str}}
 otp_state = {} 
 
 # =======================
@@ -65,29 +65,29 @@ def is_in_cache(number):
     return any(entry["number"] == number for entry in cache)
 
 # =======================
-# OTP STATE UTILS (NEW)
+# OTP STATE UTILS
 # =======================
 def load_otp_state():
     global otp_state
     if os.path.exists(OTP_STATE_FILE):
         with open(OTP_STATE_FILE, "r") as f:
             try:
-                otp_state = json.load(f)
+                # Pastikan timestamp dikonversi ke float saat load
+                data = json.load(f)
+                otp_state = {k: {**v, 'timestamp': float(v['timestamp'])} for k, v in data.items()}
             except json.JSONDecodeError:
                 otp_state = {}
-    
-    # Konversi keys (nomor) yang tersimpan sebagai string kembali ke set jika perlu, 
-    # namun untuk otp_state kita simpan sebagai dict {number: info}
     
 def save_otp_state():
     with open(OTP_STATE_FILE, "w") as f:
         json.dump(otp_state, f, indent=2)
 
-def add_to_otp_state(number, user_id, prefix):
+def add_to_otp_state(number, user_id, prefix, country):
     # Menyimpan state awal WAITING dengan timestamp saat ini
     otp_state[number] = {
         "user_id": user_id,
         "range": prefix,
+        "country": country,
         "message": "waiting",
         "timestamp": time.time()
     }
@@ -166,9 +166,13 @@ def is_user_in_group(user_id):
     return r["result"]["status"] in ["member", "administrator", "creator"]
 
 # =======================
-# PARSE NOMOR
+# PARSE NOMOR & OTP
 # =======================
 async def get_number_and_country(page):
+    """
+    Scrapes nomor dan negara dari baris pertama yang belum ada di cache
+    dan belum berstatus success/failed (asumsi masih waiting atau baru masuk).
+    """
     rows = await page.query_selector_all("tbody tr")
     for row in rows:
         phone_el = await row.query_selector(".phone-number")
@@ -181,7 +185,6 @@ async def get_number_and_country(page):
             continue
             
         # Skip nomor yang sudah ada status sukses/gagal (untuk proses get_number_and_country)
-        # Nomor waiting tetap diambil
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
             
@@ -191,6 +194,9 @@ async def get_number_and_country(page):
     return None, None
 
 async def get_otp_message(page, number_to_check):
+    """
+    Scrapes status, OTP, dan full message untuk nomor tertentu.
+    """
     rows = await page.query_selector_all("tbody tr")
     for row in rows:
         phone_el = await row.query_selector(".phone-number")
@@ -199,6 +205,9 @@ async def get_otp_message(page, number_to_check):
         number = (await phone_el.inner_text()).strip()
         
         if number == number_to_check:
+            country_el = await row.query_selector(".badge.bg-primary")
+            country = (await country_el.inner_text()).strip().upper() if country_el else "-"
+            
             # Cek status
             is_success = await row.query_selector(".status-success")
             is_failed = await row.query_selector(".status-failed")
@@ -207,26 +216,25 @@ async def get_otp_message(page, number_to_check):
                 # Scrape OTP dan Full Message
                 otp_el = await row.query_selector(".otp-badge")
                 full_sms_el = await row.query_selector(".copy-icon")
-                country_el = await row.query_selector(".badge.bg-primary")
                 
-                otp = (await otp_el.inner_text()).split()[0].strip() if otp_el else "-"
+                # Mengambil OTP (teks sebelum karakter pertama setelah ikon)
+                otp_text = await otp_el.inner_text() if otp_el else "-"
+                otp = otp_text.split()[0].strip() if ' ' in otp_text else otp_text.strip()
                 
                 # Mengambil data-sms attribute
                 full_sms_data = await full_sms_el.get_attribute("data-sms") if full_sms_el else "Tidak ada pesan"
-                
-                country = (await country_el.inner_text()).strip().upper() if country_el else "-"
 
                 return "success", otp, full_sms_data, country
             
             if is_failed:
-                return "failed", "-", "-", "-"
+                return "failed", "-", "-", country
                 
-            return "waiting", "-", "-", "-"
+            return "waiting", "-", "-", country
 
     return None, None, None, None # Nomor tidak ditemukan di halaman
 
 # =======================
-# PROCESS USER INPUT
+# PROCESS USER INPUT (FINAL CORRECTED)
 # =======================
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     try:
@@ -246,20 +254,20 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         # 2. Jeda 0.1 detik
         await asyncio.sleep(0.1) 
 
-        # 3. Klik Get Number
-        await page.click("#getNumberBtn")
+        # 3. Klik Get Number dan tunggu potensi navigasi/reload
+        # Menggunakan expect_navigation untuk mengantisipasi reload setelah klik
+        try:
+            async with page.expect_navigation(wait_until="load", timeout=15000):
+                await page.click("#getNumberBtn")
+        except PlaywrightTimeoutError:
+            # Jika tidak ada navigasi setelah klik (normal di SPA), lanjutkan
+            print("[DEBUG] Klik tidak memicu navigasi. Melanjutkan...")
+            pass # Lanjutkan tanpa error
 
-        # 4. Jeda 1 detik
-        await asyncio.sleep(1) 
-
-        # 5. Refresh halaman dan tunggu load penuh (State 'load')
-        await page.reload()
-        await page.wait_for_load_state("load") 
-
-        # 6. Jeda 1.5 detik sebelum scraping
+        # 4. Jeda 1.5 detik sebelum scraping
         await asyncio.sleep(1.5) 
 
-        # 7. Scrape nomor & negara terbaru (Percobaan Pertama)
+        # 5. Scrape nomor & negara terbaru (Percobaan Pertama)
         number, country = await get_number_and_country(page)
         
         # Logika Tambahan: Jeda 3 detik dan coba scrape lagi jika percobaan pertama gagal
@@ -287,12 +295,10 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         save_cache({"number": number, "country": country})
         
         # Tambahkan ke OTP State (Awalnya waiting)
-        add_to_otp_state(number, user_id, prefix)
+        add_to_otp_state(number, user_id, prefix, country)
 
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
         
-        # Format pesan awal, menggunakan format yang sama dengan yang diminta (untuk sementara)
-        # Tapi pesan ini akan di-edit/diganti di proses_otp_update jika sukses
         msg = (
             "✅ The number is ready\n\n"
             f"📞 Number  : <code>{number}</code>\n"
@@ -316,52 +322,55 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             del pending_message[user_id]
 
     except Exception as e:
-        print(f"[ERROR] Terjadi kesalahan pada Playwright/Web: {e}")
+        print(f"[ERROR] Terjadi kesalahan pada Playwright/Web (process_user_input): {type(e).__name__} - {e}")
         # Gunakan msg_id yang sudah didapatkan untuk mengedit pesan error
         error_msg_id = message_id_to_edit if message_id_to_edit else pending_message.get(user_id)
         if error_msg_id:
-            tg_edit(user_id, error_msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
+            tg_edit(user_id, error_msg_id, f"❌ Terjadi kesalahan saat proses web. Silakan coba lagi.")
             if user_id in pending_message:
                 del pending_message[user_id]
 
+
 # =======================
-# OTP UPDATE LOOP (NEW)
+# OTP UPDATE LOOP
 # =======================
 async def process_otp_update(page):
     while True:
         try:
-            # Reload halaman untuk mendapatkan data terbaru
-            await page.reload()
-            await page.wait_for_load_state("load") 
+            # Reload halaman. Gunakan timeout eksplisit.
+            await page.reload(wait_until="load", timeout=15000) 
+            
+            # Jeda untuk memastikan DOM stabil
             await asyncio.sleep(1.5) 
 
             numbers_to_delete = []
 
+            # Iterasi di salinan state untuk menghindari error perubahan ukuran saat loop
             for number, info in list(otp_state.items()):
                 user_id = info['user_id']
                 range_prefix = info['range']
                 current_status = info['message']
                 timestamp = info['timestamp']
+                country = info['country']
                 
                 # Check Timeout (10 minutes = 600 seconds)
                 if current_status == "waiting" and (time.time() - timestamp > 600):
                     numbers_to_delete.append(number)
                     
-                    # Kirim pesan timeout
+                    # Kirim pesan timeout (permanen)
                     msg_timeout = (
                         "⚠️ Nomor telah kadaluarsa (Timeout 10 Menit)\n\n"
                         f"📞 Number  : <code>{number}</code>\n"
                         f"🏷️ Range   : <code>{range_prefix}</code>\n\n"
                         "Silahkan Get Number Ulang!"
                     )
-                    # Mengirim pesan baru (permanen)
                     tg_send(user_id, msg_timeout) 
                     
-                    continue # Lanjut ke nomor berikutnya
+                    continue 
 
                 # Hanya proses nomor yang masih "waiting"
                 if current_status == "waiting":
-                    status, otp, full_sms, country = await get_otp_message(page, number)
+                    status, otp, full_sms, _ = await get_otp_message(page, number)
                     
                     if status == "success":
                         numbers_to_delete.append(number)
@@ -381,7 +390,7 @@ async def process_otp_update(page):
                         inline_kb = {
                             "inline_keyboard": [
                                 [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}] # Ganti URL admin
+                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}]
                             ]
                         }
                         
@@ -391,26 +400,31 @@ async def process_otp_update(page):
                     elif status == "failed":
                         numbers_to_delete.append(number)
                         
-                        # Kirim pesan failed
+                        # Kirim pesan failed (permanen)
                         msg_failed = (
                             "❌ NOMOR GAGAL MENDAPATKAN PESAN\n\n"
                             f"📞 Number  : <code>{number}</code>\n"
                             f"🏷️ Range   : <code>{range_prefix}</code>\n\n"
                             "Silahkan Get Number Ulang!"
                         )
-                        # Mengirim pesan baru (permanen)
                         tg_send(user_id, msg_failed)
 
 
             # Hapus nomor yang sudah selesai atau timeout
             for number in numbers_to_delete:
                 delete_otp_state(number)
-                print(f"[OTP] Nomor {number} dihapus dari state. Status: Success/Failed/Timeout")
+                print(f"[OTP] Nomor {number} dihapus dari state.")
 
-        except Exception as e:
-            print(f"[ERROR] Terjadi kesalahan pada OTP Update Loop: {e}")
+        # Tangkap error Playwright/Web
+        except (PlaywrightTimeoutError, Exception) as e:
+            # Ini akan menangani ERR_ABORTED, timeout, dan error lainnya saat reload/scrape
+            print(f"[ERROR] Terjadi kesalahan pada OTP Update Loop (Reload/Scrape Gagal): {type(e).__name__} - {e}")
             
-        # Jeda 10 detik sebelum cek lagi
+            # Jeda lebih lama (misalnya 20 detik) untuk memberi waktu Playwright pulih
+            await asyncio.sleep(20) 
+            continue # Lanjutkan ke iterasi berikutnya
+
+        # Jeda normal sebelum cek lagi
         await asyncio.sleep(10)
 
 # =======================
@@ -581,13 +595,16 @@ async def main():
     async with async_playwright() as p:
         # Pengecekan koneksi ke Chrome CDP
         try:
+            # Gunakan browser = await p.chromium.connect_over_cdp(...)
+            # Pastikan Chrome dijalankan dengan flag --remote-debugging-port=9222
             browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             context = browser.contexts[0]
-            page = context.pages[0]
+            # Asumsi halaman yang aktif adalah halaman yang dituju
+            page = context.pages[0] 
             print("[OK] Connected to existing Chrome")
         except Exception as e:
             print(f"[ERROR] Gagal terhubung ke Chrome CDP. Pastikan Chrome berjalan dengan flag --remote-debugging-port=9222. Error: {e}")
-            return # Hentikan eksekusi jika koneksi gagal
+            return 
 
         tg_send(GROUP_ID, "✅ Bot Number Active!")
 
