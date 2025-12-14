@@ -8,9 +8,9 @@ from playwright.async_api import async_playwright
 # CONFIG
 # =======================
 BOT_TOKEN = "8047851913:AAFGXlRL_e7JcLEMtOqUuuNd_46ZmIoGJN8"
-GROUP_ID = -1003492226491  # ?? HARUS NEGATIF
+GROUP_ID = -1003492226491  # HARUS NEGATIF
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-GET_NUMBER_DELAY = 3  # detik per user
+GET_NUMBER_DELAY = 1  # detik per user, biar cepat
 
 # =======================
 # GLOBAL STATE
@@ -22,6 +22,22 @@ user_queues = {}
 user_last_time = {}
 sent_numbers = set()
 pending_message = {}  # user_id -> message_id Telegram sementara
+
+# =======================
+# COUNTRY EMOJI
+# =======================
+COUNTRY_EMOJI = {
+    "Nepal": "🇳🇵",
+    "Ivory Coast": "🇨🇮",
+    "Guinea": "🇬🇳",
+    "Central Afrika": "🇨🇫",
+    "Togo": "🇹🇬",
+    "Tajikistan": "🇹🇯",
+    "Benin": "🇧🇯",
+    "Sierra Leone": "🇸🇱",
+    "Madagascar": "🇲🇬",
+    "Afganistan": "🇦🇫",
+}
 
 # =======================
 # TELEGRAM UTILS
@@ -55,50 +71,9 @@ def can_process(user_id):
     return time.time() - last >= GET_NUMBER_DELAY
 
 # =======================
-# HELPER: MAPPING NEGARA KE EMOJI
-# =======================
-def get_country_emoji(country_name):
-    # Mapping negara berdasarkan permintaan, bisa dikembangkan lebih lanjut
-    # Nama negara yang diekstrak dari web mungkin berbeda dari nama di sini
-    country_map = {
-        "Nepal": "🇳🇵",
-        "Ivory Coast": "🇨🇮",
-        "Guinea": "🇬🇳",
-        "Central Africa": "🇨🇫", # Menggunakan "Central Africa" untuk "Central Afrika"
-        "Togo": "🇹🇬",
-        "Tajikistan": "🇹🇯",
-        "Benin": "🇧🇯",
-        "Sierra Leone": "🇸🇱",
-        "Madagascar": "🇲🇬",
-        "Afganistan": "🇦🇫",
-        # Tambahkan negara lain sesuai kebutuhan
-    }
-    # Coba cari persis, atau pakai default
-    # Coba cari dengan mengabaikan kasus
-    for k, v in country_map.items():
-        if k.lower() in country_name.lower():
-            return v
-    
-    return "🗺️" # Emoji default
-
-# =======================
 # PARSE NOMOR
 # =======================
 async def get_number_and_country(page):
-    # Tunggu nomor muncul. Kita tidak lagi menunggu 2.5 detik,
-    # tapi kita harus menunggu sampai baris/tabel diperbarui.
-    # Kita akan menunggu *selector* yang mengindikasikan nomor baru siap
-    # atau status nomor telah diperbarui.
-    try:
-        # Menunggu sampai tabel nomor diperbarui, misalnya menunggu baris baru muncul
-        # atau tombol 'Get Number' kembali aktif setelah klik.
-        # Karena kita tidak tahu persis DOM mana yang berubah, kita akan
-        # mencoba menunggu perubahan di dalam tabel
-        await page.wait_for_selector('tbody tr:not(.new-row-indicator-that-is-not-there)', timeout=10000)
-    except:
-        # Jika timeout, tetap lanjut dengan apa yang ada (mungkin nomor sudah ada)
-        pass
-
     rows = await page.query_selector_all("tbody tr")
     for row in rows:
         phone_el = await row.query_selector(".phone-number")
@@ -107,17 +82,11 @@ async def get_number_and_country(page):
         number = (await phone_el.inner_text()).strip()
         if number in sent_numbers:
             continue
-        # Periksa apakah nomor sudah berhasil/gagal (jika ada indikator status)
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
-        
         country_el = await row.query_selector(".badge.bg-primary")
         country = (await country_el.inner_text()).strip() if country_el else "-"
-        
-        # Asumsi nomor pertama yang belum terkirim dan belum ada status adalah nomor baru
-        # Kita akan mengambil nomor pertama yang ditemukan
         return number, country
-    
     return None, None
 
 # =======================
@@ -133,25 +102,14 @@ async def process_user_queue(page, user_id):
     prefix = req["prefix"]
 
     try:
-        # 1. Input Range
+        # langsung input prefix & klik get number
         await page.wait_for_selector('input[name="numberrange"]', timeout=5000)
-        await page.click('input[name="numberrange"]')
-        await page.keyboard.press("Control+A")
-        await page.keyboard.press("Backspace")
-        await page.type('input[name="numberrange"]', prefix, delay=50)
-
-        # 2. Klik Get Number
-        await page.wait_for_selector("#getNumberBtn", timeout=5000)
-        await page.evaluate("document.querySelector('#getNumberBtn').click()")
-
-        # --- PERUBAHAN UTAMA: TIDAK ADA wait_for_timeout(2500) ---
-        # Kita langsung panggil get_number_and_country yang sekarang menangani
-        # menunggu pembaruan di halaman web.
+        await page.fill('input[name="numberrange"]', prefix)
+        await page.click("#getNumberBtn")
+        await page.wait_for_timeout(1000)  # biar halaman update
 
         number, country = await get_number_and_country(page)
-        
         if not number:
-            # hapus pending message jika ada
             if user_id in pending_message:
                 tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan, coba lagi nanti.")
                 del pending_message[user_id]
@@ -159,42 +117,30 @@ async def process_user_queue(page, user_id):
 
         sent_numbers.add(number)
         user_last_time[user_id] = time.time()
-        
-        # Ambil emoji bendera
-        emoji = get_country_emoji(country)
 
-        # --- PERUBAHAN: FORMAT PESAN BARU ---
+        emoji = COUNTRY_EMOJI.get(country, "🗺️")
         msg = (
-            "✅ **The number is ready**\n\n"
-            f"📞 **Number** : <code>{number}</code>\n"
-            f"{emoji} **Country** : {country}\n"
-            f"🏷️ **Range** : <code>{prefix}</code>"
+            "✅ The number is ready\n\n"
+            f"📞 Number  : <code>{number}</code>\n"
+            f"{emoji} Country : {country}\n"
+            f"🏷️ Range   : <code>{prefix}</code>"
         )
-        
-        # --- PERUBAHAN: REPLY MARKUP BARU ---
-        reply_markup = {
+
+        inline_kb = {
             "inline_keyboard": [
-                [
-                    {"text": "📲 Get Num", "callback_data": "getnum"},
-                    {"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}
-                ]
+                [{"text": "📲 Get Number", "callback_data": "getnum"}],
+                [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}]
             ]
         }
 
-
-        # kirim atau edit pesan pending
         if user_id in pending_message:
-            tg_edit(user_id, pending_message[user_id], msg, reply_markup=reply_markup)
+            tg_edit(user_id, pending_message[user_id], msg, reply_markup=inline_kb)
             del pending_message[user_id]
         else:
-            tg_send(user_id, msg, reply_markup=reply_markup)
+            tg_send(user_id, msg, reply_markup=inline_kb)
 
     except Exception as e:
         print(f"[ERROR] {e}")
-        # Hapus/edit pesan pending jika terjadi error
-        if user_id in pending_message:
-             tg_edit(user_id, pending_message[user_id], f"❌ Terjadi kesalahan saat mengambil nomor: {e}")
-             del pending_message[user_id]
 
 # =======================
 # TELEGRAM LOOP
@@ -224,16 +170,11 @@ async def telegram_loop(page):
 
                 if user_id in waiting_range:
                     prefix = text.strip()
-                    if not prefix: # Pastikan ada input
-                        tg_send(user_id, "⚠️ Range tidak boleh kosong. Silakan kirim range contoh: <code>628272XXXX</code>")
-                        continue
-                        
                     waiting_range.remove(user_id)
                     user_last_range[user_id] = prefix
                     user_queues.setdefault(user_id, deque()).append({"prefix": prefix, "time": time.time()})
-                    
                     # kirim pesan pending sementara
-                    msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>\nUserID: {user_id}")
+                    msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: {prefix}\nUserID: {user_id}")
                     pending_message[user_id] = msg_id
 
             if "callback_query" in upd:
@@ -249,7 +190,7 @@ async def telegram_loop(page):
                         verified_users.add(user_id)
                         kb = {
                             "inline_keyboard": [
-                                [{"text": "📲 Get Num", "callback_data": "getnum"}],
+                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
                                 [{"text": "👨‍💼 Admin", "url": "https://t.me/"}],
                             ]
                         }
@@ -269,7 +210,6 @@ async def telegram_loop(page):
 # =======================
 async def worker_loop(page):
     while True:
-        # Iterasi melalui salinan kunci untuk menghindari masalah ukuran kamus saat popleft()
         for user_id in list(user_queues.keys()):
             await process_user_queue(page, user_id)
         await asyncio.sleep(1)
