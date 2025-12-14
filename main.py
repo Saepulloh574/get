@@ -1,6 +1,5 @@
 import asyncio
 import time
-import aiohttp
 import requests
 from collections import deque
 from playwright.async_api import async_playwright
@@ -11,7 +10,7 @@ from playwright.async_api import async_playwright
 BOT_TOKEN = "8047851913:AAFGXlRL_e7JcLEMtOqUuuNd_46ZmIoGJN8"
 GROUP_ID = -1003492226491  # ?? HARUS NEGATIF
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-GET_NUMBER_DELAY = 3
+GET_NUMBER_DELAY = 3  # detik per user
 
 # =======================
 # GLOBAL STATE
@@ -22,80 +21,60 @@ user_last_range = {}
 user_queues = {}
 user_last_time = {}
 sent_numbers = set()
-pending_message = {}  # user_id -> message_id
+pending_message = {}  # user_id -> message_id Telegram sementara
 
 # =======================
-# TELEGRAM ASYNC UTILS
+# TELEGRAM UTILS
 # =======================
-async def tg_send(chat_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+def tg_send(chat_id, text, reply_markup=None):
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
-        payload["reply_markup"] = reply_markup
+        data["reply_markup"] = reply_markup
+    r = requests.post(f"{API}/sendMessage", json=data).json()
+    if r.get("ok"):
+        return r["result"]["message_id"]
+    return None
 
-    async with aiohttp.ClientSession() as s:
-        async with s.post(f"{API}/sendMessage", json=payload) as r:
-            data = await r.json()
-            return data["result"]["message_id"]
-
-async def tg_edit(chat_id, msg_id, text, reply_markup=None):
-    payload = {
-        "chat_id": chat_id,
-        "message_id": msg_id,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+def tg_edit(chat_id, message_id, text, reply_markup=None):
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
-        payload["reply_markup"] = reply_markup
-
-    async with aiohttp.ClientSession() as s:
-        async with s.post(f"{API}/editMessageText", json=payload):
-            pass
+        data["reply_markup"] = reply_markup
+    requests.post(f"{API}/editMessageText", json=data)
 
 def tg_get_updates(offset):
-    return requests.get(
-        f"{API}/getUpdates",
-        params={"offset": offset, "timeout": 30}
-    ).json()
+    return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 30}).json()
 
 def is_user_in_group(user_id):
-    r = requests.get(
-        f"{API}/getChatMember",
-        params={"chat_id": GROUP_ID, "user_id": user_id}
-    ).json()
+    r = requests.get(f"{API}/getChatMember", params={"chat_id": GROUP_ID, "user_id": user_id}).json()
     if not r.get("ok"):
         return False
     return r["result"]["status"] in ["member", "administrator", "creator"]
 
 def can_process(user_id):
-    return time.time() - user_last_time.get(user_id, 0) >= GET_NUMBER_DELAY
+    last = user_last_time.get(user_id, 0)
+    return time.time() - last >= GET_NUMBER_DELAY
 
 # =======================
-# GET NUMBER (FAST)
+# PARSE NOMOR
 # =======================
 async def get_number_and_country(page):
-    row = await page.query_selector("tbody tr")
-    if not row:
-        return None, None
-
-    phone = await row.query_selector(".phone-number")
-    if not phone:
-        return None, None
-
-    number = (await phone.inner_text()).strip()
-    if number in sent_numbers:
-        return None, None
-
-    country_el = await row.query_selector(".badge.bg-primary")
-    country = (await country_el.inner_text()).strip() if country_el else "-"
-
-    return number, country
+    rows = await page.query_selector_all("tbody tr")
+    for row in rows:
+        phone_el = await row.query_selector(".phone-number")
+        if not phone_el:
+            continue
+        number = (await phone_el.inner_text()).strip()
+        if number in sent_numbers:
+            continue
+        if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
+            continue
+        country_el = await row.query_selector(".badge.bg-primary")
+        country = (await country_el.inner_text()).strip() if country_el else "-"
+        return number, country
+    return None, None
 
 # =======================
-# PROCESS QUEUE
+# PROCESS USER REQUEST
 # =======================
 async def process_user_queue(page, user_id):
     if user_id not in user_queues or not user_queues[user_id]:
@@ -108,41 +87,49 @@ async def process_user_queue(page, user_id):
 
     try:
         await page.wait_for_selector('input[name="numberrange"]', timeout=5000)
-        await page.fill('input[name="numberrange"]', prefix)
-        await page.click("#getNumberBtn")
+        await page.click('input[name="numberrange"]')
+        await page.keyboard.press("Control+A")
+        await page.keyboard.press("Backspace")
+        await page.type('input[name="numberrange"]', prefix, delay=50)
+        await page.wait_for_selector("#getNumberBtn", timeout=5000)
+        await page.evaluate("document.querySelector('#getNumberBtn').click()")
+        await page.wait_for_timeout(2500)
 
-        await page.wait_for_selector("tbody tr .phone-number", timeout=5000)
         number, country = await get_number_and_country(page)
-
         if not number:
+            # hapus pending message jika ada
+            if user_id in pending_message:
+                tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan, coba lagi nanti.")
+                del pending_message[user_id]
             return
 
         sent_numbers.add(number)
         user_last_time[user_id] = time.time()
 
         msg = (
-            "✅ <b>The number is ready</b>\n\n"
-            f"📞 Number  : <code>{number}</code>\n"
-            f"🌍 Country : {country}\n"
-            f"📌 Range   : <code>{prefix}</code>"
+            "✅ The number is ready\n\n"
+            f"Number  : <code>{number}</code>\n"
+            f"Country : {country}\n"
+            f"Range   : <code>{prefix}</code>"
         )
 
-        await tg_edit(
-            user_id,
-            pending_message[user_id],
-            msg,
-            reply_markup={
+        # kirim atau edit pesan pending
+        if user_id in pending_message:
+            tg_edit(user_id, pending_message[user_id], msg, reply_markup={
                 "inline_keyboard": [
-                    [
-                        {"text": "🔁 Change", "callback_data": "change"},
-                        {"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}
-                    ]
+                    [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}]
                 ]
-            }
-        )
+            })
+            del pending_message[user_id]
+        else:
+            tg_send(user_id, msg, reply_markup={
+                "inline_keyboard": [
+                    [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}]
+                ]
+            })
 
     except Exception as e:
-        print("[ERROR]", e)
+        print(f"[ERROR] {e}")
 
 # =======================
 # TELEGRAM LOOP
@@ -157,64 +144,53 @@ async def telegram_loop(page):
             if "message" in upd:
                 msg = upd["message"]
                 user_id = msg["chat"]["id"]
-                text = msg.get("text", "")
                 username = msg["from"].get("username", "-")
+                text = msg.get("text", "")
 
                 if text == "/start":
-                    await tg_send(
-                        user_id,
-                        f"Halo @{username} 👋\nGabung grup lalu verifikasi.",
-                        {
-                            "inline_keyboard": [
-                                [{"text": "📌 Gabung Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}],
-                                [{"text": "✅ Verifikasi", "callback_data": "verify"}],
-                            ]
-                        }
-                    )
+                    kb = {
+                        "inline_keyboard": [
+                            [{"text": "📌 Gabung Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}],
+                            [{"text": "✅ Verifikasi", "callback_data": "verify"}],
+                        ]
+                    }
+                    tg_send(user_id, f"Halo @{username} 👋\nGabung grup untuk verifikasi.", kb)
+                    continue
 
-                elif user_id in waiting_range:
+                if user_id in waiting_range:
+                    prefix = text.strip()
                     waiting_range.remove(user_id)
-                    user_last_range[user_id] = text
-                    user_queues.setdefault(user_id, deque()).append({"prefix": text})
-                    msg_id = await tg_send(
-                        user_id,
-                        "⏳ <b>Processing...</b>\nPlease wait"
-                    )
+                    user_last_range[user_id] = prefix
+                    user_queues.setdefault(user_id, deque()).append({"prefix": prefix, "time": time.time()})
+                    # kirim pesan pending sementara
+                    msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: {prefix}\nUserID: {user_id}")
                     pending_message[user_id] = msg_id
 
             if "callback_query" in upd:
                 cq = upd["callback_query"]
                 user_id = cq["from"]["id"]
                 data_cb = cq["data"]
+                username = cq["from"].get("username", "-")
 
                 if data_cb == "verify":
                     if not is_user_in_group(user_id):
-                        await tg_send(user_id, "❌ Join grup dulu.")
+                        tg_send(user_id, "❌ Belum gabung grup, silakan join dulu.")
                     else:
                         verified_users.add(user_id)
-                        await tg_send(
-                            user_id,
-                            "✅ Verifikasi berhasil",
-                            {
-                                "inline_keyboard": [
-                                    [{"text": "📲 Get Num", "callback_data": "getnum"}]
-                                ]
-                            }
-                        )
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 Get Num", "callback_data": "getnum"}],
+                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}],
+                            ]
+                        }
+                        tg_send(user_id, f"✅ Verifikasi Berhasil!\n\nUser : @{username}\nId : {user_id}\nGunakan tombol di bawah:", kb)
 
-                elif data_cb == "getnum":
+                if data_cb == "getnum":
                     if user_id not in verified_users:
-                        await tg_send(user_id, "⚠️ Verifikasi dulu.")
+                        tg_send(user_id, "⚠️ Harap verifikasi dulu.")
                         continue
                     waiting_range.add(user_id)
-                    await tg_send(user_id, "Kirim range contoh:\n<code>62827XXXX</code>")
-
-                elif data_cb == "change":
-                    prefix = user_last_range.get(user_id)
-                    if prefix:
-                        user_queues.setdefault(user_id, deque()).append({"prefix": prefix})
-                        msg_id = await tg_send(user_id, "⏳ <b>Changing number...</b>")
-                        pending_message[user_id] = msg_id
+                    tg_send(user_id, "Kirim range contoh: <code>628272XXXX</code>")
 
         await asyncio.sleep(1)
 
@@ -223,9 +199,9 @@ async def telegram_loop(page):
 # =======================
 async def worker_loop(page):
     while True:
-        for uid in list(user_queues.keys()):
-            await process_user_queue(page, uid)
-        await asyncio.sleep(0.5)
+        for user_id in list(user_queues.keys()):
+            await process_user_queue(page, user_id)
+        await asyncio.sleep(1)
 
 # =======================
 # MAIN
@@ -235,9 +211,10 @@ async def main():
         browser = await p.chromium.connect_over_cdp("http://localhost:9222")
         context = browser.contexts[0]
         page = context.pages[0]
-        print("[OK] Connected to Chrome Debug")
+        print("[OK] Connected to existing Chrome")
 
-        await tg_send(GROUP_ID, "✅ Bot Number Active")
+        # kirim pesan ke grup saat bot aktif
+        tg_send(GROUP_ID, "✅ Bot Number Active!")
 
         await asyncio.gather(
             telegram_loop(page),
