@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import requests
-import time
 from playwright.async_api import async_playwright
 
 # =======================
@@ -14,9 +13,8 @@ API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CACHE_FILE = "cache.json"
 
 # --- NEW CONFIG ---
-ADMIN_ID = 7184123643  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
+ADMIN_ID = 123456789  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
 INLINE_RANGE_FILE = "inline.json"
-OTP_STATE_FILE = "otp_state.json" # FILE BARU UNTUK STATUS OTP
 
 # =======================
 # GLOBAL STATE
@@ -26,8 +24,6 @@ waiting_range = set()
 waiting_admin_input = set() # NEW
 pending_message = {}  # user_id -> message_id Telegram sementara
 sent_numbers = set()
-# otp_state: {number: {"user_id": int, "range": str, "message": str, "timestamp": float}}
-otp_state = {} 
 
 # =======================
 # COUNTRY EMOJI
@@ -65,41 +61,7 @@ def is_in_cache(number):
     return any(entry["number"] == number for entry in cache)
 
 # =======================
-# OTP STATE UTILS (NEW)
-# =======================
-def load_otp_state():
-    global otp_state
-    if os.path.exists(OTP_STATE_FILE):
-        with open(OTP_STATE_FILE, "r") as f:
-            try:
-                otp_state = json.load(f)
-            except json.JSONDecodeError:
-                otp_state = {}
-    
-    # Konversi keys (nomor) yang tersimpan sebagai string kembali ke set jika perlu, 
-    # namun untuk otp_state kita simpan sebagai dict {number: info}
-    
-def save_otp_state():
-    with open(OTP_STATE_FILE, "w") as f:
-        json.dump(otp_state, f, indent=2)
-
-def add_to_otp_state(number, user_id, prefix):
-    # Menyimpan state awal WAITING dengan timestamp saat ini
-    otp_state[number] = {
-        "user_id": user_id,
-        "range": prefix,
-        "message": "waiting",
-        "timestamp": time.time()
-    }
-    save_otp_state()
-
-def delete_otp_state(number):
-    if number in otp_state:
-        del otp_state[number]
-        save_otp_state()
-
-# =======================
-# INLINE RANGE UTILS
+# INLINE RANGE UTILS (NEW)
 # =======================
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
@@ -180,8 +142,7 @@ async def get_number_and_country(page):
         if is_in_cache(number):
             continue
             
-        # Skip nomor yang sudah ada status sukses/gagal (untuk proses get_number_and_country)
-        # Nomor waiting tetap diambil
+        # Skip nomor yang sudah ada status sukses/gagal
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
             
@@ -190,43 +151,8 @@ async def get_number_and_country(page):
         return number, country
     return None, None
 
-async def get_otp_message(page, number_to_check):
-    rows = await page.query_selector_all("tbody tr")
-    for row in rows:
-        phone_el = await row.query_selector(".phone-number")
-        if not phone_el:
-            continue
-        number = (await phone_el.inner_text()).strip()
-        
-        if number == number_to_check:
-            # Cek status
-            is_success = await row.query_selector(".status-success")
-            is_failed = await row.query_selector(".status-failed")
-            
-            if is_success:
-                # Scrape OTP dan Full Message
-                otp_el = await row.query_selector(".otp-badge")
-                full_sms_el = await row.query_selector(".copy-icon")
-                country_el = await row.query_selector(".badge.bg-primary")
-                
-                otp = (await otp_el.inner_text()).split()[0].strip() if otp_el else "-"
-                
-                # Mengambil data-sms attribute
-                full_sms_data = await full_sms_el.get_attribute("data-sms") if full_sms_el else "Tidak ada pesan"
-                
-                country = (await country_el.inner_text()).strip().upper() if country_el else "-"
-
-                return "success", otp, full_sms_data, country
-            
-            if is_failed:
-                return "failed", "-", "-", "-"
-                
-            return "waiting", "-", "-", "-"
-
-    return None, None, None, None # Nomor tidak ditemukan di halaman
-
 # =======================
-# PROCESS USER INPUT
+# PROCESS USER INPUT (FINAL CORRECTED)
 # =======================
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     try:
@@ -283,22 +209,15 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 del pending_message[user_id]
             return
 
-        # simpan nomor baru ke cache
+        # simpan nomor baru ke cache (Hanya jika berhasil ditemukan)
         save_cache({"number": number, "country": country})
-        
-        # Tambahkan ke OTP State (Awalnya waiting)
-        add_to_otp_state(number, user_id, prefix)
 
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
-        
-        # Format pesan awal, menggunakan format yang sama dengan yang diminta (untuk sementara)
-        # Tapi pesan ini akan di-edit/diganti di proses_otp_update jika sukses
         msg = (
             "✅ The number is ready\n\n"
             f"📞 Number  : <code>{number}</code>\n"
             f"{emoji} COUNTRY : {country}\n"
-            f"🏷️ Range   : <code>{prefix}</code>\n\n"
-            f"Status OTP: **WAITING** (Akan diupdate jika pesan masuk atau timeout 10 menit)"
+            f"🏷️ Range   : <code>{prefix}</code>"
         )
 
         inline_kb = {
@@ -307,8 +226,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}]
             ]
         }
-        
-        # Edit pesan menjadi status WAITING
+
         tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
         
         # Hapus ID dari pending_message
@@ -323,95 +241,6 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, error_msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
             if user_id in pending_message:
                 del pending_message[user_id]
-
-# =======================
-# OTP UPDATE LOOP (NEW)
-# =======================
-async def process_otp_update(page):
-    while True:
-        try:
-            # Reload halaman untuk mendapatkan data terbaru
-            await page.reload()
-            await page.wait_for_load_state("load") 
-            await asyncio.sleep(1.5) 
-
-            numbers_to_delete = []
-
-            for number, info in list(otp_state.items()):
-                user_id = info['user_id']
-                range_prefix = info['range']
-                current_status = info['message']
-                timestamp = info['timestamp']
-                
-                # Check Timeout (10 minutes = 600 seconds)
-                if current_status == "waiting" and (time.time() - timestamp > 600):
-                    numbers_to_delete.append(number)
-                    
-                    # Kirim pesan timeout
-                    msg_timeout = (
-                        "⚠️ Nomor telah kadaluarsa (Timeout 10 Menit)\n\n"
-                        f"📞 Number  : <code>{number}</code>\n"
-                        f"🏷️ Range   : <code>{range_prefix}</code>\n\n"
-                        "Silahkan Get Number Ulang!"
-                    )
-                    # Mengirim pesan baru (permanen)
-                    tg_send(user_id, msg_timeout) 
-                    
-                    continue # Lanjut ke nomor berikutnya
-
-                # Hanya proses nomor yang masih "waiting"
-                if current_status == "waiting":
-                    status, otp, full_sms, country = await get_otp_message(page, number)
-                    
-                    if status == "success":
-                        numbers_to_delete.append(number)
-                        
-                        # Format pesan sukses (permanen, TIDAK EDIT)
-                        emoji = COUNTRY_EMOJI.get(country, "🗺️")
-                        success_msg = (
-                            "SUKSES MESSAGE IS READY🥳\n\n"
-                            f"📞 Number  : <code>{number}</code>\n"
-                            f"{emoji} COUNTRY : {country}\n"
-                            f"🏷️ Range   : <code>{range_prefix}</code>\n\n"
-                            f"🔢 OTP : <code>{otp}</code>\n\n"
-                            f"Full Messages :\n"
-                            f"<blockquote>{full_sms}</blockquote>"
-                        )
-                        
-                        inline_kb = {
-                            "inline_keyboard": [
-                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}] # Ganti URL admin
-                            ]
-                        }
-                        
-                        # Kirim pesan baru (permanen)
-                        tg_send(user_id, success_msg, inline_kb)
-
-                    elif status == "failed":
-                        numbers_to_delete.append(number)
-                        
-                        # Kirim pesan failed
-                        msg_failed = (
-                            "❌ NOMOR GAGAL MENDAPATKAN PESAN\n\n"
-                            f"📞 Number  : <code>{number}</code>\n"
-                            f"🏷️ Range   : <code>{range_prefix}</code>\n\n"
-                            "Silahkan Get Number Ulang!"
-                        )
-                        # Mengirim pesan baru (permanen)
-                        tg_send(user_id, msg_failed)
-
-
-            # Hapus nomor yang sudah selesai atau timeout
-            for number in numbers_to_delete:
-                delete_otp_state(number)
-                print(f"[OTP] Nomor {number} dihapus dari state. Status: Success/Failed/Timeout")
-
-        except Exception as e:
-            print(f"[ERROR] Terjadi kesalahan pada OTP Update Loop: {e}")
-            
-        # Jeda 10 detik sebelum cek lagi
-        await asyncio.sleep(10)
 
 # =======================
 # TELEGRAM LOOP
@@ -530,7 +359,7 @@ async def telegram_loop(page):
                     
                     if inline_ranges:
                         kb = generate_inline_keyboard(inline_ranges)
-                        msg_text = "Range tersedia saat ini, silahkan gunakan range di bawah atau Manual Range."
+                        msg_text = "Silahksn gunakan range di bawah atau Manual range untuk mendapatkan nomor."
                         
                         # Edit pesan callback menjadi menu range
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
@@ -540,7 +369,7 @@ async def telegram_loop(page):
                     else:
                         # Jika inline range kosong, langsung minta input manual
                         waiting_range.add(user_id)
-                        tg_edit(chat_id, menu_msg_id, "Kirim range contoh: <code>628272XXXX</code>")
+                        tg_edit(chat_id, menu_msg_id, "Kirim range contoh: <code>9377009XXX</code>")
                         # Simpan ID pesan ini agar dapat diedit oleh process_user_input
                         pending_message[user_id] = menu_msg_id
                     continue
@@ -563,7 +392,7 @@ async def telegram_loop(page):
                     waiting_range.add(user_id)
                     
                     # Edit pesan menu menjadi permintaan input manual
-                    tg_edit(chat_id, menu_msg_id, "<b>Get Number</b>\n\nKirim range contoh: <code>628272XXXX</code>")
+                    tg_edit(chat_id, menu_msg_id, "<b>Get Number</b>\n\nKirim range contoh: <code>9377009XXX</code>")
                     
                     # Simpan ID pesan ini agar dapat diedit oleh process_user_input (untuk kasus input teks)
                     pending_message[user_id] = menu_msg_id
@@ -575,27 +404,15 @@ async def telegram_loop(page):
 # MAIN
 # =======================
 async def main():
-    # Load state saat bot start
-    load_otp_state()
-    
     async with async_playwright() as p:
-        # Pengecekan koneksi ke Chrome CDP
-        try:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-            context = browser.contexts[0]
-            page = context.pages[0]
-            print("[OK] Connected to existing Chrome")
-        except Exception as e:
-            print(f"[ERROR] Gagal terhubung ke Chrome CDP. Pastikan Chrome berjalan dengan flag --remote-debugging-port=9222. Error: {e}")
-            return # Hentikan eksekusi jika koneksi gagal
+        browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+        context = browser.contexts[0]
+        page = context.pages[0]
+        print("[OK] Connected to existing Chrome")
 
         tg_send(GROUP_ID, "✅ Bot Number Active!")
 
-        # Jalankan loop Telegram dan loop update OTP secara paralel
-        await asyncio.gather(
-            telegram_loop(page),
-            process_otp_update(page)
-        )
+        await telegram_loop(page)
 
 if __name__ == "__main__":
     asyncio.run(main())
