@@ -107,7 +107,7 @@ async def get_number_and_country(page):
     return None, None
 
 # =======================
-# PROCESS USER INPUT (FINAL CORRECTED with 3s SCRAPING WAIT)
+# PROCESS USER INPUT (FINAL CORRECTED with 1.5s SCRAPING WAIT)
 # =======================
 async def process_user_input(page, user_id, prefix):
     try:
@@ -132,8 +132,8 @@ async def process_user_input(page, user_id, prefix):
         await page.reload()
         await page.wait_for_load_state("load") 
 
-        # 6. Jeda 0.3 detik sebelum scraping
-        await asyncio.sleep(0.3) 
+        # 6. Jeda 1.5 detik sebelum scraping (Perubahan yang Diminta)
+        await asyncio.sleep(1.5) 
 
         # 7. Scrape nomor & negara terbaru (Percobaan Pertama)
         number, country = await get_number_and_country(page)
