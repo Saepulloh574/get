@@ -1,4 +1,6 @@
 import asyncio
+import json
+import os
 import requests
 from playwright.async_api import async_playwright
 
@@ -8,14 +10,15 @@ from playwright.async_api import async_playwright
 BOT_TOKEN = "8047851913:AAFGXlRL_e7JcLEMtOqUuuNd_46ZmIoGJN8"
 GROUP_ID = -1003492226491  # HARUS NEGATIF
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+CACHE_FILE = "cache.json"
 
 # =======================
 # GLOBAL STATE
 # =======================
 verified_users = set()
 waiting_range = set()
-sent_numbers = set()
 pending_message = {}  # user_id -> message_id Telegram sementara
+sent_numbers = set()
 
 # =======================
 # COUNTRY EMOJI
@@ -32,6 +35,25 @@ COUNTRY_EMOJI = {
     "MADAGASCAR": "🇲🇬",
     "AFGANISTAN": "🇦🇫",
 }
+
+# =======================
+# CACHE UTILS
+# =======================
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_cache(number_entry):
+    cache = load_cache()
+    cache.append(number_entry)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=2)
+
+def is_in_cache(number):
+    cache = load_cache()
+    return any(entry["number"] == number for entry in cache)
 
 # =======================
 # TELEGRAM UTILS
@@ -70,8 +92,8 @@ async def get_number_and_country(page):
         if not phone_el:
             continue
         number = (await phone_el.inner_text()).strip()
-        if number in sent_numbers:
-            continue
+        if is_in_cache(number):
+            continue  # skip nomor yang sudah ada di cache
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
         country_el = await row.query_selector(".badge.bg-primary")
@@ -80,7 +102,7 @@ async def get_number_and_country(page):
     return None, None
 
 # =======================
-# PROCESS USER REQUEST
+# PROCESS USER INPUT
 # =======================
 async def process_user_input(page, user_id, prefix):
     try:
@@ -88,25 +110,31 @@ async def process_user_input(page, user_id, prefix):
         msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: {prefix}")
         pending_message[user_id] = msg_id
 
-        # refresh halaman dan tunggu load
-        await page.reload()
-        await page.wait_for_load_state("networkidle")
-
-        # input prefix & klik tombol
+        # isi input & klik Get Number
         await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
         await page.fill('input[name="numberrange"]', prefix)
         await page.click("#getNumberBtn")
 
-        # tunggu table muncul
-        await page.wait_for_selector("tbody tr", timeout=10000)
+        # refresh halaman dan tunggu load
+        await page.reload()
+        await page.wait_for_load_state("networkidle")
 
+        # scrape nomor & negara terbaru
         number, country = await get_number_and_country(page)
         if not number:
-            tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan, coba lagi nanti.")
-            del pending_message[user_id]
-            return
+            # ambil nomor dari cache jika tidak ada yang baru
+            cache = load_cache()
+            if cache:
+                last_entry = cache[-1]
+                number = last_entry["number"]
+                country = last_entry["country"]
+            else:
+                tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan, coba lagi nanti.")
+                del pending_message[user_id]
+                return
 
-        sent_numbers.add(number)
+        # simpan nomor baru ke cache
+        save_cache({"number": number, "country": country})
 
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
         msg = (
@@ -148,7 +176,6 @@ async def telegram_loop(page):
                 username = msg["from"].get("username", "-")
                 text = msg.get("text", "")
 
-                # start command
                 if text == "/start":
                     kb = {
                         "inline_keyboard": [
@@ -159,14 +186,11 @@ async def telegram_loop(page):
                     tg_send(user_id, f"Halo @{username} 👋\nGabung grup untuk verifikasi.", kb)
                     continue
 
-                # user kirim range
                 if user_id in waiting_range:
                     waiting_range.remove(user_id)
                     prefix = text.strip()
-                    # langsung proses input tanpa queue
                     await process_user_input(page, user_id, prefix)
 
-            # callback query
             if "callback_query" in upd:
                 cq = upd["callback_query"]
                 user_id = cq["from"]["id"]
@@ -205,7 +229,6 @@ async def main():
         page = context.pages[0]
         print("[OK] Connected to existing Chrome")
 
-        # kirim pesan ke grup saat bot aktif
         tg_send(GROUP_ID, "✅ Bot Number Active!")
 
         await telegram_loop(page)
