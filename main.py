@@ -92,17 +92,22 @@ async def get_number_and_country(page):
         if not phone_el:
             continue
         number = (await phone_el.inner_text()).strip()
+        
+        # Lanjutkan untuk skip nomor yang sudah ada di cache
         if is_in_cache(number):
-            continue  # skip nomor yang sudah ada di cache
+            continue
+            
+        # Lanjutkan untuk skip nomor yang sudah ada status sukses/gagal
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
+            
         country_el = await row.query_selector(".badge.bg-primary")
         country = (await country_el.inner_text()).strip().upper() if country_el else "-"
         return number, country
     return None, None
 
 # =======================
-# PROCESS USER INPUT
+# PROCESS USER INPUT (MODIFIED)
 # =======================
 async def process_user_input(page, user_id, prefix):
     try:
@@ -115,23 +120,26 @@ async def process_user_input(page, user_id, prefix):
         await page.fill('input[name="numberrange"]', prefix)
         await page.click("#getNumberBtn")
 
-        # refresh halaman dan tunggu load
+        # --- MODIFIKASI DIMULAI ---
+        # Jeda 0.2 detik setelah klik
+        await asyncio.sleep(0.2) 
+
+        # refresh halaman dan tunggu load penuh (State 'load')
         await page.reload()
-        await page.wait_for_load_state("networkidle")
+        await page.wait_for_load_state("load") 
+
+        # Jeda 0.4 detik sebelum scraping
+        await asyncio.sleep(0.4) 
+        # --- MODIFIKASI SELESAI ---
 
         # scrape nomor & negara terbaru
         number, country = await get_number_and_country(page)
+        
+        # Hapus logika fallback cache. Jika 'number' kosong, kirim error.
         if not number:
-            # ambil nomor dari cache jika tidak ada yang baru
-            cache = load_cache()
-            if cache:
-                last_entry = cache[-1]
-                number = last_entry["number"]
-                country = last_entry["country"]
-            else:
-                tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan, coba lagi nanti.")
-                del pending_message[user_id]
-                return
+            tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan/tidak ada yang baru, coba lagi nanti.")
+            del pending_message[user_id]
+            return
 
         # simpan nomor baru ke cache
         save_cache({"number": number, "country": country})
@@ -157,7 +165,7 @@ async def process_user_input(page, user_id, prefix):
     except Exception as e:
         print(f"[ERROR] {e}")
         if user_id in pending_message:
-            tg_edit(user_id, pending_message[user_id], f"❌ Terjadi kesalahan: {e}")
+            tg_edit(user_id, pending_message[user_id], f"❌ Terjadi kesalahan saat proses web: {e}")
             del pending_message[user_id]
 
 # =======================
@@ -224,7 +232,9 @@ async def telegram_loop(page):
 # =======================
 async def main():
     async with async_playwright() as p:
+        # Menggunakan cdp untuk koneksi ke browser yang sudah dibuka
         browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+        # Asumsi halaman yang dibutuhkan adalah halaman pertama dari konteks pertama
         context = browser.contexts[0]
         page = context.pages[0]
         print("[OK] Connected to existing Chrome")
