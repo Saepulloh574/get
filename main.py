@@ -93,11 +93,11 @@ async def get_number_and_country(page):
             continue
         number = (await phone_el.inner_text()).strip()
         
-        # Lanjutkan untuk skip nomor yang sudah ada di cache
+        # Skip nomor yang sudah ada di cache
         if is_in_cache(number):
             continue
             
-        # Lanjutkan untuk skip nomor yang sudah ada status sukses/gagal
+        # Skip nomor yang sudah ada status sukses/gagal
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
             
@@ -107,7 +107,7 @@ async def get_number_and_country(page):
     return None, None
 
 # =======================
-# PROCESS USER INPUT (MODIFIED)
+# PROCESS USER INPUT (FINAL CORRECTED with 3s SCRAPING WAIT)
 # =======================
 async def process_user_input(page, user_id, prefix):
     try:
@@ -115,33 +115,45 @@ async def process_user_input(page, user_id, prefix):
         msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: {prefix}")
         pending_message[user_id] = msg_id
 
-        # isi input & klik Get Number
+        # 1. Isi input
         await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
         await page.fill('input[name="numberrange"]', prefix)
+        
+        # 2. Jeda 0.1 detik
+        await asyncio.sleep(0.1) 
+
+        # 3. Klik Get Number
         await page.click("#getNumberBtn")
 
-        # --- MODIFIKASI DIMULAI ---
-        # Jeda 0.2 detik setelah klik
+        # 4. Jeda 0.2 detik
         await asyncio.sleep(0.2) 
 
-        # refresh halaman dan tunggu load penuh (State 'load')
+        # 5. Refresh halaman dan tunggu load penuh (State 'load')
         await page.reload()
         await page.wait_for_load_state("load") 
 
-        # Jeda 0.4 detik sebelum scraping
-        await asyncio.sleep(0.4) 
-        # --- MODIFIKASI SELESAI ---
+        # 6. Jeda 0.3 detik sebelum scraping
+        await asyncio.sleep(0.3) 
 
-        # scrape nomor & negara terbaru
+        # 7. Scrape nomor & negara terbaru (Percobaan Pertama)
         number, country = await get_number_and_country(page)
         
-        # Hapus logika fallback cache. Jika 'number' kosong, kirim error.
+        # Logika Tambahan: Jeda 3 detik dan coba scrape lagi jika percobaan pertama gagal
         if not number:
-            tg_edit(user_id, pending_message[user_id], "❌ Nomor tidak ditemukan/tidak ada yang baru, coba lagi nanti.")
+            # Jeda 3 detik
+            await asyncio.sleep(3) 
+            
+            # Scrape lagi (Percobaan Kedua)
+            number, country = await get_number_and_country(page)
+        
+        # Final Check: Jika masih tidak menemukan nomor
+        if not number:
+            # Kirim feedback error yang spesifik
+            tg_edit(user_id, pending_message[user_id], "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET ULANG")
             del pending_message[user_id]
             return
 
-        # simpan nomor baru ke cache
+        # simpan nomor baru ke cache (Hanya jika berhasil ditemukan)
         save_cache({"number": number, "country": country})
 
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
@@ -163,9 +175,10 @@ async def process_user_input(page, user_id, prefix):
         del pending_message[user_id]
 
     except Exception as e:
-        print(f"[ERROR] {e}")
+        print(f"[ERROR] Terjadi kesalahan pada Playwright/Web: {e}")
         if user_id in pending_message:
-            tg_edit(user_id, pending_message[user_id], f"❌ Terjadi kesalahan saat proses web: {e}")
+            # Kirim pesan error umum jika ada masalah pada Playwright
+            tg_edit(user_id, pending_message[user_id], f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
             del pending_message[user_id]
 
 # =======================
@@ -232,9 +245,7 @@ async def telegram_loop(page):
 # =======================
 async def main():
     async with async_playwright() as p:
-        # Menggunakan cdp untuk koneksi ke browser yang sudah dibuka
         browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-        # Asumsi halaman yang dibutuhkan adalah halaman pertama dari konteks pertama
         context = browser.contexts[0]
         page = context.pages[0]
         print("[OK] Connected to existing Chrome")
