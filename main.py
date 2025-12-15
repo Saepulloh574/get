@@ -15,6 +15,7 @@ CACHE_FILE = "cache.json"
 # --- NEW CONFIG ---
 ADMIN_ID = 7184123643  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
 INLINE_RANGE_FILE = "inline.json"
+BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" # GANTI DENGAN LINK BOT ANDA
 
 # =======================
 # GLOBAL STATE
@@ -195,7 +196,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         await page.fill('input[name="numberrange"]', prefix)
         
         # 2. Jeda 0.1 detik
-        await asyncio.sleep(0.1) 
+        await asyncio.sleep(0.2) 
 
         # 3. Klik Get Number
         await page.click("#getNumberBtn")
@@ -279,12 +280,31 @@ async def telegram_loop(page):
 
             if "message" in upd:
                 msg = upd["message"]
-                user_id = msg["chat"]["id"]
+                chat_id = msg["chat"]["id"]
+                user_id = msg["from"]["id"]
                 
                 # Mendapatkan nama untuk mention (HTML Parse Mode)
                 first_name = msg["from"].get("first_name", "User")
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
+
+                # --- NEW MEMBER WELCOME HANDLER ---
+                if "new_chat_members" in msg and chat_id == GROUP_ID:
+                    for member in msg["new_chat_members"]:
+                        # Cek apakah anggota baru adalah bot itu sendiri (biasanya diabaikan)
+                        if member["is_bot"]:
+                            continue
+                            
+                        member_first_name = member.get("first_name", "New User")
+                        member_mention = f"<a href='tg://user?id={member['id']}'>{member_first_name}</a>"
+
+                        welcome_message = (
+                            f"HEYY {member_mention} WELLCOME!!,\n"
+                            f"Ready to receive SMS? Get number at here {BOT_USERNAME_LINK}"
+                        )
+                        # Kirim pesan sambutan ke grup
+                        tg_send(GROUP_ID, welcome_message)
+                    continue # Lanjutkan ke update berikutnya
 
                 # --- ADMIN COMMAND HANDLER ---
                 if user_id == ADMIN_ID:
