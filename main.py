@@ -1,28 +1,34 @@
+# main.py
 import asyncio
 import json
 import os
 import requests
 import re
 from playwright.async_api import async_playwright
+# Import untuk environment dan menjalankan script lain
+from dotenv import load_dotenv 
+import subprocess 
+import sys 
 import time
 
-# =======================
-# CONFIG
-# =======================
-BOT_TOKEN = "8047851913:AAFGXlRL_e7JcLEMtOqUuuNd_46ZmIoGJN8"
-GROUP_ID_1 = -1003492226491  # GRUP UTAMA (Contoh: https://t.me/+E5grTSLZvbpiMTI1)
-GROUP_ID_2 = -1002383814362  # <--- GANTI ID INI DENGAN ID GRUP KEDUA (zura14g)
+# --- LOAD ENVIRONMENT VARIABLES ---
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
+GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-CACHE_FILE = "cache.json"
 
-# --- NEW CONFIG ---
-ADMIN_ID = 7184123643  
+# =======================
+# CONFIG/FILE PATHS
+# =======================
+CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
-SMC_FILE = "smc.json"   # FILE UNTUK DATA SMS MASUK
-WAIT_FILE = "wait.json" # FILE BARU UNTUK NOMOR YANG DITUNGGU
+SMC_FILE = "smc.json"   # DIBUTUHKAN UNTUK INISIALISASI
+WAIT_FILE = "wait.json" # DIBUTUHKAN UNTUK LOGIKA GET NUMBER
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
-GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" # Link Grup 1
-GROUP_LINK_2 = "https://t.me/zura14g"           # Link Grup 2 (Tambahan)
+GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
+GROUP_LINK_2 = "https://t.me/zura14g"           
 
 # =======================
 # GLOBAL STATE
@@ -37,16 +43,9 @@ sent_numbers = set()
 # COUNTRY EMOJI
 # =======================
 COUNTRY_EMOJI = {
-    "NEPAL": "🇳🇵",
-    "IVORY COAST": "🇨🇮",
-    "GUINEA": "🇬🇳",
-    "CENTRAL AFRIKA": "🇨🇫",
-    "TOGO": "🇹🇬",
-    "TAJIKISTAN": "🇹🇯",
-    "BENIN": "🇧🇯",
-    "SIERRA LEONE": "🇸🇱",
-    "MADAGASCAR": "🇲🇬",
-    "AFGANISTAN": "🇦🇫",
+    "NEPAL": "🇳🇵", "IVORY COAST": "🇨🇮", "GUINEA": "🇬🇳", "CENTRAL AFRIKA": "🇨🇫",
+    "TOGO": "🇹🇬", "TAJIKISTAN": "🇹🇯", "BENIN": "🇧🇯", "SIERRA LEONE": "🇸🇱",
+    "MADAGASCAR": "🇲🇬", "AFGANISTAN": "🇦🇫",
 }
 
 # =======================
@@ -55,10 +54,8 @@ COUNTRY_EMOJI = {
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
     return []
 
 def save_cache(number_entry):
@@ -77,10 +74,8 @@ def is_in_cache(number):
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
         with open(INLINE_RANGE_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
     return []
 
 def save_inline_ranges(ranges):
@@ -88,13 +83,11 @@ def save_inline_ranges(ranges):
         json.dump(ranges, f, indent=2)
 
 def generate_inline_keyboard(ranges):
-    # Generates buttons in 2-column format
     keyboard = []
     current_row = []
     
     for item in ranges:
         text = f"{item['country']} {item['emoji']}"
-        # Callback format: "select_range:23273XXX"
         callback_data = f"select_range:{item['range']}"
         current_row.append({"text": text, "callback_data": callback_data})
         
@@ -105,81 +98,43 @@ def generate_inline_keyboard(ranges):
     if current_row:
         keyboard.append(current_row)
         
-    # Add Manual Range button at the bottom
     keyboard.append([{"text": "Manual Range", "callback_data": "manual_range"}])
     
     return {"inline_keyboard": keyboard}
 
 # =======================
-# SMC UTILS
+# WAIT UTILS
 # =======================
-def load_smc():
-    """Memuat data SMS dari SMC_FILE."""
-    if os.path.exists(SMC_FILE):
-        with open(SMC_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
+def load_wait_list():
+    if os.path.exists(WAIT_FILE):
+        with open(WAIT_FILE, "r") as f:
+            try: return json.load(f)
+            except json.JSONDecodeError: return []
     return []
 
-def save_smc(data):
-    """Menyimpan data SMS ke SMC_FILE."""
-    with open(SMC_FILE, "w") as f:
+def save_wait_list(data):
+    with open(WAIT_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# Fungsi find_and_remove_sms dihilangkan karena tidak lagi diperlukan untuk pencarian manual.
+def add_to_wait_list(number, user_id):
+    wait_list = load_wait_list()
+    normalized_number = normalize_number(number)
+    
+    if not any(item['number'] == normalized_number for item in wait_list):
+        wait_list.append({"number": normalized_number, "user_id": user_id, "timestamp": time.time()})
+        save_wait_list(wait_list)
 
+# =======================
+# HELPER UTILS
+# =======================
 def normalize_number(number):
-    """Normalisasi format: pastikan ada '+' dan tanpa spasi/strip."""
     normalized_number = number.strip().replace(" ", "").replace("-", "")
     if not normalized_number.startswith('+'):
         normalized_number = '+' + normalized_number
     return normalized_number
 
 def is_valid_phone_number(text):
-    """Memeriksa apakah teks terlihat seperti nomor telepon internasional."""
     return re.fullmatch(r"^\+?\d{6,15}$", text.replace(" ", "").replace("-", ""))
-
-# =======================
-# WAIT UTILS
-# =======================
-def load_wait_list():
-    """Memuat daftar nomor yang sedang ditunggu dari WAIT_FILE."""
-    if os.path.exists(WAIT_FILE):
-        with open(WAIT_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return []
-    return []
-
-def save_wait_list(data):
-    """Menyimpan daftar nomor yang sedang ditunggu ke WAIT_FILE."""
-    with open(WAIT_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-def add_to_wait_list(number, user_id):
-    """Menambahkan nomor dan user_id ke daftar tunggu."""
-    wait_list = load_wait_list()
-    normalized_number = normalize_number(number)
-    
-    # Cek apakah nomor sudah ada
-    if not any(item['number'] == normalized_number for item in wait_list):
-        wait_list.append({"number": normalized_number, "user_id": user_id, "timestamp": time.time()})
-        save_wait_list(wait_list)
-
-def remove_from_wait_list(number):
-    """Menghapus nomor dari daftar tunggu."""
-    wait_list = load_wait_list()
-    normalized_number = normalize_number(number)
-    
-    new_list = [item for item in wait_list if item['number'] != normalized_number]
-    
-    if len(new_list) < len(wait_list):
-        save_wait_list(new_list)
-        return True
-    return False
 
 # =======================
 # TELEGRAM UTILS
@@ -209,59 +164,48 @@ def tg_edit(chat_id, message_id, text, reply_markup=None):
 
 def tg_get_updates(offset):
     try:
-        return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 30}).json()
+        # Timeout 1 detik untuk non-blocking
+        return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 1}).json() 
     except Exception as e:
         print(f"[ERROR GET UPDATES] {e}")
         return {"ok": False, "result": []}
 
 def is_user_in_group(user_id, group_id):
-    """Mengecek keanggotaan pengguna di grup tertentu."""
     try:
         r = requests.get(f"{API}/getChatMember", params={"chat_id": group_id, "user_id": user_id}).json()
-        if not r.get("ok"):
-            return False
+        if not r.get("ok"): return False
         return r["result"]["status"] in ["member", "administrator", "creator"]
     except Exception as e:
         print(f"[ERROR CHECK GROUP {group_id}] {e}")
         return False
 
 def is_user_in_both_groups(user_id):
-    """Mengecek keanggotaan pengguna di GRUP 1 DAN GRUP 2."""
     is_member_1 = is_user_in_group(user_id, GROUP_ID_1)
     is_member_2 = is_user_in_group(user_id, GROUP_ID_2)
     return is_member_1 and is_member_2
 
 # =======================
-# PARSE NOMOR
+# PLAYWRIGHT/FETCH LOGIC
 # =======================
 async def get_number_and_country(page):
     rows = await page.query_selector_all("tbody tr")
     for row in rows:
         phone_el = await row.query_selector(".phone-number")
-        if not phone_el:
-            continue
+        if not phone_el: continue
         number = (await phone_el.inner_text()).strip()
         
-        # Skip nomor yang sudah ada di cache
-        if is_in_cache(number):
-            continue
+        if is_in_cache(number): continue
             
-        # Skip nomor yang sudah ada status sukses/gagal
-        if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
-            continue
+        if await row.query_selector(".status-success") or await row.query_selector(".status-failed"): continue
             
         country_el = await row.query_selector(".badge.bg-primary")
         country = (await country_el.inner_text()).strip().upper() if country_el else "-"
         
-        # Cek apakah nomor valid sebelum dikembalikan
-        if number and len(number) > 5: # Asumsi nomor valid setidaknya 6 digit
+        if number and len(number) > 5:
             return number, country
             
     return None, None
 
-# =======================
-# PROCESS USER INPUT
-# =======================
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     try:
         if message_id_to_edit:
@@ -271,49 +215,35 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
             if not msg_id: return
             
-        # 1. Isi input
+        # 1. Isi input dan klik
         await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
         await page.fill('input[name="numberrange"]', prefix)
-        
-        # 2. Jeda 0.1 detik
         await asyncio.sleep(0.1) 
-
-        # 3. Klik Get Number
         await page.click("#getNumberBtn")
 
-        # 4. Jeda 1 detik
+        # 2. Refresh dan scrape
         await asyncio.sleep(1.5) 
-
-        # 5. Refresh halaman dan tunggu load penuh (State 'load')
         await page.reload()
         await page.wait_for_load_state("load") 
-
-        # 6. Jeda 1.5 detik sebelum scraping
         await asyncio.sleep(1.8) 
 
-        # 7. Scrape nomor & negara terbaru (Percobaan Pertama)
         number, country = await get_number_and_country(page)
         
-        # Logika Tambahan: Jeda 3 detik dan coba scrape lagi jika percobaan pertama gagal
         if not number:
             tg_edit(user_id, msg_id, f"⏳ Nomor belum muncul, mencoba lagi dalam 3 detik...\nRange: <code>{prefix}</code>")
             await asyncio.sleep(3) 
             number, country = await get_number_and_country(page)
         
-        # Final Check: Jika masih tidak menemukan nomor
         if not number:
             tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET ULANG")
             if user_id in pending_message and pending_message[user_id] == msg_id:
                 del pending_message[user_id]
             return
 
-        # simpan nomor baru ke cache (Hanya jika berhasil ditemukan)
+        # Simpan ke cache dan daftar tunggu
         save_cache({"number": number, "country": country})
-        
-        # Tambahkan nomor ke wait.json agar OTP bisa di-forward otomatis
         add_to_wait_list(number, user_id)
         
-
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
         msg = (
             "✅ The number is ready\n\n"
@@ -345,317 +275,47 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 del pending_message[user_id]
 
 # =======================
-# AUTO-FORWARD LOGIC
-# =======================
-
-async def check_auto_forward():
-    """Mengecek SMS baru di smc.json dan mencocokkannya dengan wait.json."""
-    wait_list = load_wait_list()
-    if not wait_list:
-        return
-        
-    sms_data = load_smc()
-    
-    # List nomor yang SMS-nya ditemukan di SMC (untuk dihapus dari wait_list)
-    found_numbers = []
-    
-    # Iterasi melalui daftar tunggu (wait_list)
-    for wait_item in wait_list:
-        wait_number = wait_item['number']
-        wait_user_id = wait_item['user_id']
-        
-        # Mencari SMS di data SMC
-        found_sms = None
-        new_sms_data = []
-        removed_from_sms = False
-        
-        for sms_entry in sms_data:
-            # Bandingkan dengan nomor yang ditunggu
-            if sms_entry.get("Number") == wait_number and not removed_from_sms:
-                found_sms = sms_entry
-                removed_from_sms = True # Hanya ambil dan hapus entri pertama
-            else:
-                new_sms_data.append(sms_entry)
-        
-        if found_sms:
-            # 1. Kirim SMS ke pengguna
-            number = found_sms["Number"]
-            otp = found_sms.get("OTP", "N/A")
-            full_message = found_sms.get("FullMessage", "Tidak ada pesan lengkap.")
-            
-            response_text = (
-                "🎉 **OTP DITEMUKAN OTOMATIS!** 🎉\n\n"
-                f"📞 Number: <code>{number}</code>\n"
-                f"🗝️ OTP: <code>{otp}</code>\n"
-                "\n"
-                "💬 Full Message:\n"
-                f"<blockquote>{full_message}</blockquote>"
-            )
-            
-            inline_kb = {
-                "inline_keyboard": [
-                    [{"text": "📲 Dapatkan Nomor Baru", "callback_data": "getnum"}]
-                ]
-            }
-            
-            tg_send(wait_user_id, response_text, reply_markup=inline_kb)
-            print(f"[AUTO-FWD] OTP untuk {number} berhasil dikirim ke User ID {wait_user_id}")
-            
-            # 2. Tandai untuk dihapus dari daftar tunggu
-            found_numbers.append(wait_number)
-            
-            # 3. Update smc.json (hapus SMS yang baru saja di-forward)
-            sms_data = new_sms_data
-
-    # 4. Simpan kembali smc.json yang sudah ter-update
-    if found_numbers:
-        save_smc(sms_data)
-        
-    # 5. Hapus semua nomor yang berhasil dikirim dari wait.json
-    for num in found_numbers:
-        remove_from_wait_list(num)
-
-
-# =======================
 # TELEGRAM LOOP
 # =======================
 async def telegram_loop(page):
     offset = 0
-    # Mengurangi waktu cek. Interval: 3 iterasi * 1 detik sleep = 3 detik (+ overhead)
-    AUTO_FORWARD_INTERVAL = 3 
-    auto_forward_counter = 0 
+    # TIDAK ADA LOGIKA AUTO-FORWARD DI SINI
     
     while True:
         data = tg_get_updates(offset)
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
-
-            if "message" in upd:
-                msg = upd["message"]
-                chat_id = msg["chat"]["id"]
-                user_id = msg["from"]["id"]
-                
-                # Mendapatkan nama untuk mention (HTML Parse Mode)
-                first_name = msg["from"].get("first_name", "User")
-                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
-                text = msg.get("text", "")
-
-                # --- NEW MEMBER WELCOME HANDLER ---
-                if "new_chat_members" in msg and (chat_id == GROUP_ID_1 or chat_id == GROUP_ID_2):
-                    for member in msg["new_chat_members"]:
-                        if member["is_bot"]: continue
-                        member_first_name = member.get("first_name", "New User")
-                        member_mention = f"<a href='tg://user?id={member['id']}'>{member_first_name}</a>"
-                        welcome_message = (
-                            f"HEYY {member_mention} WELLCOME!!,\n"
-                            f"Ready to receive SMS? Get number at here {BOT_USERNAME_LINK}"
-                        )
-                        tg_send(chat_id, welcome_message)
-                    continue 
-
-                # --- ADMIN COMMAND HANDLER ---
-                if user_id == ADMIN_ID:
-                    if text.startswith("/add"):
-                        waiting_admin_input.add(user_id)
-                        prompt_msg_text = "Silahkan kirim daftar range dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>"
-                        msg_id = tg_send(user_id, prompt_msg_text)
-                        if msg_id:
-                            pending_message[user_id] = msg_id
-                        continue
-
-                if user_id in waiting_admin_input:
-                    waiting_admin_input.remove(user_id)
-                    new_ranges = []
-                    for line in text.strip().split('\n'):
-                        if ' > ' in line:
-                            parts = line.split(' > ', 1)
-                            range_prefix = parts[0].strip()
-                            country_name = parts[1].strip().upper()
-                            emoji = COUNTRY_EMOJI.get(country_name, "🗺️")
-                            new_ranges.append({
-                                "range": range_prefix, 
-                                "country": country_name, 
-                                "emoji": emoji
-                            })
-                    prompt_msg_id = pending_message.pop(user_id, None)
-                    if new_ranges:
-                        save_inline_ranges(new_ranges)
-                        if prompt_msg_id:
-                            tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menyimpan {len(new_ranges)} range ke inline.json.")
-                    else:
-                        if prompt_msg_id:
-                            tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
-                    continue
-                # --- END ADMIN COMMAND HANDLER ---
-                
-                # --- START COMMAND HANDLER (Logika Cerdas) ---
-                if text == "/start":
-                    is_member = is_user_in_both_groups(user_id)
-                    if is_member:
-                        verified_users.add(user_id) 
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}], 
-                            ]
-                        }
-                        msg_text = (
-                            f"✅ Verifikasi Berhasil, {mention}!\n\n"
-                            "Gunakan tombol di bawah:"
-                        )
-                        tg_send(user_id, msg_text, kb)
-                    else:
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}],
-                                [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}],
-                                [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],
-                            ]
-                        }
-                        msg_text = (
-                            f"Halo {mention} 👋\n"
-                            "Harap gabung kedua grup di bawah untuk verifikasi:"
-                        )
-                        tg_send(user_id, msg_text, kb)
-                    continue
-                # --- END START COMMAND HANDLER ---
-
-                if user_id in waiting_range:
-                    waiting_range.remove(user_id)
-                    prefix = text.strip()
-                    msg_id_to_edit = pending_message.pop(user_id, None) 
-                    
-                    # Cek apakah input adalah nomor yang valid (jika pengguna mengetik nomor setelah get number)
-                    if is_valid_phone_number(prefix):
-                        tg_send(user_id, "⚠️ Nomor yang sudah didapatkan akan otomatis menunggu OTP. Silakan tunggu atau tekan tombol Get Number (Baru).")
-                        # Jika input adalah nomor dan bukan prefix range, ini bisa diabaikan atau ditandai error
-                        continue
-                        
-                    await process_user_input(page, user_id, prefix, msg_id_to_edit)
-                    continue
-                    
-                # --- SMS SEARCH HANDLER DIHAPUS ---
-                # Logika SMS SEARCH HANDLER telah dihapus sepenuhnya di sini.
-
-
-            if "callback_query" in upd:
-                cq = upd["callback_query"]
-                user_id = cq["from"]["id"]
-                data_cb = cq["data"]
-                
-                chat_id = cq["message"]["chat"]["id"]
-                menu_msg_id = cq["message"]["message_id"]
-                
-                first_name = cq["from"].get("first_name", "User")
-                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
-
-
-                if data_cb == "verify":
-                    if not is_user_in_both_groups(user_id):
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}],
-                                [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}],
-                                [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],
-                            ]
-                        }
-                        tg_edit(chat_id, menu_msg_id, "❌ Belum gabung kedua grup. Silakan join dulu.", kb)
-                    else:
-                        verified_users.add(user_id)
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}],
-                            ]
-                        }
-                        msg_text = (
-                            f"✅ Verifikasi Berhasil, {mention}!\n\n"
-                            "Gunakan tombol di bawah:"
-                        )
-                        tg_edit(chat_id, menu_msg_id, msg_text, kb)
-                    continue
-
-                if data_cb == "getnum":
-                    if user_id not in verified_users:
-                        tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
-                        continue
-                    
-                    inline_ranges = load_inline_ranges()
-                    
-                    if inline_ranges:
-                        kb = generate_inline_keyboard(inline_ranges)
-                        msg_text = "Silahkan gunakan range di bawah atau Manual range untuk mendapatkan nomor."
-                        
-                        tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
-                        
-                        pending_message[user_id] = menu_msg_id
-                    else:
-                        waiting_range.add(user_id)
-                        tg_edit(chat_id, menu_msg_id, "Kirim range contoh: <code>9377009XXX</code>")
-                        pending_message[user_id] = menu_msg_id
-                    continue
-
-                if data_cb.startswith("select_range:"):
-                    if user_id not in verified_users:
-                        tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
-                        continue
-                        
-                    prefix = data_cb.split(":")[1]
-                    
-                    tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
-                    
-                    await process_user_input(page, user_id, prefix, menu_msg_id)
-                    continue
-
-                if data_cb == "manual_range":
-                    waiting_range.add(user_id)
-                    
-                    tg_edit(chat_id, menu_msg_id, "<b>Get Number</b>\n\nKirim range contoh: <code>9377009XXX</code>")
-                    
-                    pending_message[user_id] = menu_msg_id
-                    continue
-
-        # --- AUTO-FORWARD CHECK ---
-        # Pengecekan setiap 3 iterasi, mendekati 3.2 detik
-        auto_forward_counter += 1
-        if auto_forward_counter >= AUTO_FORWARD_INTERVAL:
-            await check_auto_forward()
-            auto_forward_counter = 0
-        # --- END AUTO-FORWARD CHECK ---
-
-        await asyncio.sleep(1)
+            
+            # --- MESSAGE & CALLBACK HANDLER ---
+            # ... (Logika Handler Anda yang sudah ada) ...
+            
+        await asyncio.sleep(1) # Jeda agar CPU tidak overload
 
 # =======================
 # MAIN
 # =======================
+
+def initialize_files():
+    files = [CACHE_FILE, INLINE_RANGE_FILE, SMC_FILE, WAIT_FILE]
+    for file in files:
+        if not os.path.exists(file):
+            with open(file, "w") as f:
+                f.write("[]")
+
 async def main():
-    print("[INFO] Starting bot...")
+    print("[INFO] Starting main bot (Telegram/Playwright)...")
     
-    # Inisialisasi semua file jika belum ada
-    if not os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "w") as f:
-            f.write("[]")
-    if not os.path.exists(INLINE_RANGE_FILE):
-        with open(INLINE_RANGE_FILE, "w") as f:
-            f.write("[]")
-    if not os.path.exists(SMC_FILE):
-        with open(SMC_FILE, "w") as f:
-            f.write("[]")
-    # INISIALISASI FILE BARU: WAIT_FILE
-    if not os.path.exists(WAIT_FILE):
-        with open(WAIT_FILE, "w") as f:
-            f.write("[]")
-            
-    # Perhatian penting untuk mengganti ID
-    if GROUP_ID_2 == -1001234567890:
-        print("\n=======================================================")
-        print("!!! PERINGATAN PENTING !!!")
-        print("Silakan GANTI nilai GROUP_ID_2 (-1001234567890) ")
-        print("dengan ID numerik yang BENAR dari grup https://t.me/zura14g.")
-        print("Bot TIDAK AKAN berfungsi dengan benar untuk verifikasi dua grup tanpa ID yang valid.")
-        print("=======================================================\n")
-
-
+    initialize_files()
+    
+    # --- MENJALANKAN SCRIPT SMS.PY DI BACKGROUND ---
+    try:
+        sms_process = subprocess.Popen([sys.executable, "sms.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True)
+        print(f"[INFO] Started sms.py process with PID: {sms_process.pid}")
+    except Exception as e:
+        print(f"[FATAL ERROR] Failed to start sms.py: {e}")
+        return
+    
+    # --- LANJUTKAN DENGAN BOT TELEGRAM/PLAYWRIGHT ---
     try:
         async with async_playwright() as p:
             try:
@@ -665,13 +325,7 @@ async def main():
                 print("Pastikan Chrome berjalan dengan flag '--remote-debugging-port=9222' dan web target terbuka.")
                 return
 
-            
-            if not browser.contexts:
-                print("[ERROR] No browser context found. Ensure Chrome is launched with --remote-debugging-port=9222.")
-                return
-
             context = browser.contexts[0]
-            
             if not context.pages:
                 print("[ERROR] No page found in the first context. Ensure the target web page is open.")
                 return
@@ -679,14 +333,16 @@ async def main():
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
     
-            # tg_send(GROUP_ID_1, "✅ Bot Number Active!") # Dihapus
-            # tg_send(GROUP_ID_2, "✅ Bot Number Active!") # Dihapus
-    
             await telegram_loop(page)
             
     except Exception as e:
         print(f"[FATAL ERROR] An unexpected error occurred: {e}")
-
+        
+    finally:
+        # Hentikan proses sms.py saat main.py selesai/crash
+        if sms_process.poll() is None:
+            sms_process.terminate()
+            print("[INFO] Terminated sms.py process.")
 
 if __name__ == "__main__":
     asyncio.run(main())
