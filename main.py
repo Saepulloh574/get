@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import requests
+import re
 from playwright.async_api import async_playwright
 
 # =======================
@@ -10,13 +11,13 @@ from playwright.async_api import async_playwright
 BOT_TOKEN = "8047851913:AAFGXlRL_e7JcLEMtOqUuuNd_46ZmIoGJN8"
 GROUP_ID_1 = -1003492226491  # GRUP UTAMA (Contoh: https://t.me/+E5grTSLZvbpiMTI1)
 GROUP_ID_2 = -1002383814362  # <--- GANTI ID INI DENGAN ID GRUP KEDUA (zura14g)
-# CATATAN: ID Grup harus NEGATIF, GANTI placeholder ID ini dengan ID -100... yang benar dari https://t.me/zura14g
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CACHE_FILE = "cache.json"
 
 # --- NEW CONFIG ---
 ADMIN_ID = 7184123643  
 INLINE_RANGE_FILE = "inline.json"
+SMC_FILE = "smc.json" # FILE BARU UNTUK DATA SMS
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" # Link Grup 1
 GROUP_LINK_2 = "https://t.me/zura14g"           # Link Grup 2 (Tambahan)
@@ -106,6 +107,58 @@ def generate_inline_keyboard(ranges):
     keyboard.append([{"text": "Manual Range", "callback_data": "manual_range"}])
     
     return {"inline_keyboard": keyboard}
+
+# =======================
+# SMC UTILS (BARU)
+# =======================
+
+def load_smc():
+    """Memuat data SMS dari SMC_FILE."""
+    if os.path.exists(SMC_FILE):
+        with open(SMC_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+def save_smc(data):
+    """Menyimpan data SMS ke SMC_FILE."""
+    with open(SMC_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def find_and_remove_sms(number_to_find):
+    """Mencari SMS berdasarkan nomor dan menghapusnya dari file."""
+    data = load_smc()
+    
+    # Normalisasi format: pastikan ada '+'
+    normalized_number = number_to_find.strip().replace(" ", "")
+    if not normalized_number.startswith('+'):
+        normalized_number = '+' + normalized_number
+        
+    found_sms = None
+    new_data = []
+    removed = False
+    
+    for entry in data:
+        # Bandingkan dengan nomor yang sudah dinormalisasi
+        if entry.get("Number") == normalized_number and not removed:
+            found_sms = entry
+            removed = True # Hanya hapus entri pertama yang cocok
+        else:
+            new_data.append(entry)
+            
+    if found_sms:
+        # Simpan kembali data tanpa SMS yang ditemukan
+        save_smc(new_data)
+        
+    return found_sms
+
+def is_valid_phone_number(text):
+    """Memeriksa apakah teks terlihat seperti nomor telepon internasional."""
+    # Regex yang sederhana untuk nomor yang dimulai dengan '+' dan diikuti 5-15 digit
+    # Atau nomor tanpa '+' diikuti setidaknya 6 digit
+    return re.fullmatch(r"^\+?\d{6,15}$", text.replace(" ", "").replace("-", ""))
 
 
 # =======================
@@ -406,6 +459,58 @@ async def telegram_loop(page):
                     await process_user_input(page, user_id, prefix, msg_id_to_edit)
                     
                     continue
+                    
+                # --- NEW SMS SEARCH HANDLER ---
+                # Hanya jika bukan perintah, bukan balasan admin, di chat pribadi, dan user sudah terverifikasi
+                if chat_id > 0 and text and not text.startswith('/') and user_id in verified_users:
+                    if is_valid_phone_number(text):
+                        # Jika teks terlihat seperti nomor telepon
+                        
+                        # Kirim pesan 'Mencari...'
+                        search_msg_id = tg_send(user_id, f"🔍 Mencari SMS untuk nomor <code>{text}</code>...")
+                        
+                        # Cari SMS dan hapus
+                        sms_data = find_and_remove_sms(text)
+                        
+                        if sms_data:
+                            # SMS ditemukan
+                            number = sms_data["Number"]
+                            otp = sms_data.get("OTP", "N/A")
+                            full_message = sms_data.get("FullMessage", "Tidak ada pesan lengkap.")
+                            
+                            response_text = (
+                                "✅ SMS Ditemukan dan Dihapus\n\n"
+                                f"📞 Number: <code>{number}</code>\n"
+                                f"🗝️ OTP: <code>{otp}</code>\n"
+                                "\n"
+                                "💬 Full Message:\n"
+                                f"<blockquote>{full_message}</blockquote>"
+                            )
+                            
+                            inline_kb = {
+                                "inline_keyboard": [
+                                    [{"text": "🔄 Cari Ulang Nomor Lain", "callback_data": "getnum"}]
+                                ]
+                            }
+                            
+                            tg_edit(user_id, search_msg_id, response_text, reply_markup=inline_kb)
+                            
+                        else:
+                            # SMS tidak ditemukan
+                            response_text = (
+                                f"❌ SMS Tidak Ditemukan\n\n"
+                                f"Tidak ada pesan untuk nomor <code>{text}</code>."
+                            )
+                            inline_kb = {
+                                "inline_keyboard": [
+                                    [{"text": "🔄 Coba Lagi / Cari Nomor Lain", "callback_data": "getnum"}]
+                                ]
+                            }
+                            tg_edit(user_id, search_msg_id, response_text, reply_markup=inline_kb)
+                            
+                        continue # Lanjut ke update berikutnya
+                # --- END SMS SEARCH HANDLER ---
+
 
             if "callback_query" in upd:
                 cq = upd["callback_query"]
@@ -448,6 +553,7 @@ async def telegram_loop(page):
 
                 if data_cb == "getnum":
                     if user_id not in verified_users:
+                        # Jika pesan sudah ada di chat, edit pesan tersebut.
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
                         continue
                     
@@ -501,6 +607,9 @@ async def main():
     if not os.path.exists(INLINE_RANGE_FILE):
         with open(INLINE_RANGE_FILE, "w") as f:
             f.write("[]")
+    if not os.path.exists(SMC_FILE): # INISIALISASI FILE SMC_FILE BARU
+        with open(SMC_FILE, "w") as f:
+            f.write("[]")
             
     # Perhatian penting untuk mengganti ID
     if GROUP_ID_2 == -1001234567890:
@@ -514,7 +623,14 @@ async def main():
 
     try:
         async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            # Gunakan try-except untuk penanganan koneksi browser yang lebih baik
+            try:
+                browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            except Exception as e:
+                print(f"[ERROR] Gagal koneksi ke Chrome CDP: {e}")
+                print("Pastikan Chrome berjalan dengan flag '--remote-debugging-port=9222' dan web target terbuka.")
+                return
+
             
             if not browser.contexts:
                 print("[ERROR] No browser context found. Ensure Chrome is launched with --remote-debugging-port=9222.")
@@ -537,8 +653,10 @@ async def main():
             await telegram_loop(page)
             
     except Exception as e:
-        print(f"[FATAL ERROR] Playwright/Browser connection failed: {e}")
-        print("Pastikan Anda menjalankan Chrome dengan flag '--remote-debugging-port=9222'.")
+        print(f"[FATAL ERROR] An unexpected error occurred: {e}")
+        # Tambahkan logika untuk mengirimkan notifikasi error ke ADMIN_ID jika perlu
+        # tg_send(ADMIN_ID, f"⚠️ FATAL ERROR pada bot: {e}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())
