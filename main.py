@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import json
 import os
 import requests
@@ -464,10 +464,9 @@ async def telegram_loop(page):
                 # Hanya jika bukan perintah, bukan balasan admin, di chat pribadi, dan user sudah terverifikasi
                 if chat_id > 0 and text and not text.startswith('/') and user_id in verified_users:
                     if is_valid_phone_number(text):
-                        # Jika teks terlihat seperti nomor telepon
-                        
                         # Kirim pesan 'Mencari...'
-                        search_msg_id = tg_send(user_id, f"🔍 Mencari SMS untuk nomor <code>{text}</code>...")
+                        # **MENGHILANGKAN PENGGUNAAN search_msg_id UNTUK EDIT**
+                        tg_send(user_id, f"🔍 Mencari SMS untuk nomor <code>{text}</code>...")
                         
                         # Cari SMS dan hapus
                         sms_data = find_and_remove_sms(text)
@@ -493,7 +492,8 @@ async def telegram_loop(page):
                                 ]
                             }
                             
-                            tg_edit(user_id, search_msg_id, response_text, reply_markup=inline_kb)
+                            # **KIRIM SEBAGAI PESAN BARU**
+                            tg_send(user_id, response_text, reply_markup=inline_kb)
                             
                         else:
                             # SMS tidak ditemukan
@@ -506,7 +506,8 @@ async def telegram_loop(page):
                                     [{"text": "🔄 Coba Lagi / Cari Nomor Lain", "callback_data": "getnum"}]
                                 ]
                             }
-                            tg_edit(user_id, search_msg_id, response_text, reply_markup=inline_kb)
+                            # **KIRIM SEBAGAI PESAN BARU**
+                            tg_send(user_id, response_text, reply_markup=inline_kb)
                             
                         continue # Lanjut ke update berikutnya
                 # --- END SMS SEARCH HANDLER ---
