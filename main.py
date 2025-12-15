@@ -18,7 +18,7 @@ ADMIN_ID = 7184123643  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
 INLINE_RANGE_FILE = "inline.json"
 OTP_STATE_FILE = "otp_state.json" 
 # URL halaman scraping (GANTI DENGAN URL ASLI ANDA!)
-SCRAPE_URL = "http://anda.url.utama/halaman/scraper" 
+SCRAPE_URL = "https://v2.mnitnetwork.com/dashboard/getnum" 
 
 # =======================
 # GLOBAL STATE
