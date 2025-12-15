@@ -1,26 +1,17 @@
-# sms.py
 import json
 import os
 import time
 import requests
 from dotenv import load_dotenv
 
-# --- LOAD ENVIRONMENT VARIABLES ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-# Gunakan nilai dari .env atau default 1800 detik (30 menit)
 WAIT_TIMEOUT_SECONDS = int(os.getenv("WAIT_TIMEOUT_SECONDS", 1800)) 
 
-# =======================
-# FILE PATHS
-# =======================
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
 
-# =======================
-# TELEGRAM UTILS (Minimalis)
-# =======================
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
@@ -28,14 +19,10 @@ def tg_send(chat_id, text, reply_markup=None):
     try:
         r = requests.post(f"{API}/sendMessage", json=data).json()
         if not r.get("ok"):
-            # Ini akan muncul di log main.py jika piping diaktifkan
             print(f"[ERROR SMS.PY SEND] {r.get('description', 'Unknown Error')}") 
     except Exception as e:
         print(f"[ERROR SMS.PY REQUEST] {e}")
 
-# =======================
-# FILE UTILS (Wait List)
-# =======================
 def load_wait_list():
     if os.path.exists(WAIT_FILE):
         with open(WAIT_FILE, "r") as f:
@@ -47,9 +34,6 @@ def save_wait_list(data):
     with open(WAIT_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-# =======================
-# FILE UTILS (SMC)
-# =======================
 def load_smc():
     if os.path.exists(SMC_FILE):
         with open(SMC_FILE, "r") as f:
@@ -61,10 +45,6 @@ def save_smc(data):
     with open(SMC_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-
-# =======================
-# CORE FORWARD LOGIC
-# =======================
 def check_and_forward():
     wait_list = load_wait_list()
     if not wait_list:
@@ -72,90 +52,66 @@ def check_and_forward():
         
     sms_data = load_smc()
     
-    new_wait_list = [] # Nomor yang masih ditunggu
+    new_wait_list = [] 
     
     current_time = time.time()
-    
     
     for wait_item in wait_list:
         wait_number = wait_item['number']
         wait_user_id = wait_item['user_id']
         timestamp = wait_item.get('timestamp', 0)
         
-        # 1. Cek Timeout (Penghapusan nomor kedaluwarsa)
         if current_time - timestamp > WAIT_TIMEOUT_SECONDS:
             timeout_msg = (
-                "❌ **NOMOR KEDALUWARSA** ❌\n\n"
+                "❌ NOMOR KEDALUWARSA ❌\n\n"
                 f"📞 Number: <code>{wait_number}</code>\n"
                 f"Waktu tunggu ({WAIT_TIMEOUT_SECONDS // 60} menit) telah habis. Nomor dihapus dari daftar tunggu."
             )
             tg_send(wait_user_id, timeout_msg)
             print(f"[SMS.PY] Nomor {wait_number} dihapus karena kedaluwarsa.")
-            continue # Lanjut ke nomor berikutnya
+            continue 
 
-        
-        # 2. Cek Kecocokan SMS
         found_sms = None
         new_sms_data = []
         removed_from_sms = False
         
-        # Mencari SMS di data SMC
         for sms_entry in sms_data:
             if sms_entry.get("Number") == wait_number and not removed_from_sms:
                 found_sms = sms_entry
                 removed_from_sms = True 
             else:
                 new_sms_data.append(sms_entry) 
-
         
         if found_sms:
-            # A. Kirim SMS ke pengguna
             otp = found_sms.get("OTP", "N/A")
             full_message = found_sms.get("FullMessage", "Tidak ada pesan lengkap.")
             
             response_text = (
                 "🎉 OTP DITEMUKAN OTOMATIS! 🎉\n\n"
                 f"📞 Number: <code>{wait_number}</code>\n"
-                f"🗝️ OTP: <code>{otp}</code>\n"
+                f"🔢 OTP: <code>{otp}</code>\n"
                 "\n"
                 "💬 Full Message:\n"
                 f"<blockquote>{full_message}</blockquote>"
             )
             
-            inline_kb = {
-                "inline_keyboard": [
-                    [{"text": "📲 Dapatkan Nomor Baru", "url": "https://t.me/myzuraisgoodbot"}] 
-                ]
-            }
-            
-            tg_send(wait_user_id, response_text, reply_markup=inline_kb)
+            tg_send(wait_user_id, response_text) 
             print(f"[SMS.PY] OTP untuk {wait_number} berhasil dikirim ke User ID {wait_user_id}")
             
-            # Nomor berhasil dikirim, jangan masukkan ke new_wait_list
-            sms_data = new_sms_data # SMS yang cocok sudah dihapus
+            sms_data = new_sms_data 
             
         else:
-            # B. Jika tidak ada SMS yang cocok dan tidak kedaluwarsa, pertahankan di daftar tunggu
             new_wait_list.append(wait_item)
 
-
-    # --- SIMPAN PERUBAHAN ---
-    
-    # 1. Simpan kembali smc.json
     save_smc(sms_data)
         
-    # 2. Simpan kembali wait.json
     save_wait_list(new_wait_list)
 
-
-# =======================
-# SMS.PY LOOP
-# =======================
 def sms_loop():
     print("[SMS.PY] SMS Auto-Forward Monitor Started.")
     while True:
         check_and_forward()
-        time.sleep(1) # Pengecekan setiap 1 detik non-stop
+        time.sleep(1) 
 
 if __name__ == "__main__":
     sms_loop()
