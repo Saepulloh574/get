@@ -1,4 +1,4 @@
-# main.py
+# main.py (VERSI DIPERBAIKI: Handler Pesan dan Callback DIKEMBALIKAN)
 import asyncio
 import json
 import os
@@ -24,8 +24,8 @@ API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 # =======================
 CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
-SMC_FILE = "smc.json"   # DIBUTUHKAN UNTUK INISIALISASI
-WAIT_FILE = "wait.json" # DIBUTUHKAN UNTUK LOGIKA GET NUMBER
+SMC_FILE = "smc.json"   
+WAIT_FILE = "wait.json" 
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g"           
@@ -121,6 +121,7 @@ def add_to_wait_list(number, user_id):
     normalized_number = normalize_number(number)
     
     if not any(item['number'] == normalized_number for item in wait_list):
+        # Penting: Tambahkan timestamp agar sms.py bisa menghapus yang timeout
         wait_list.append({"number": normalized_number, "user_id": user_id, "timestamp": time.time()})
         save_wait_list(wait_list)
 
@@ -242,7 +243,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
         # Simpan ke cache dan daftar tunggu
         save_cache({"number": number, "country": country})
-        add_to_wait_list(number, user_id)
+        add_to_wait_list(number, user_id) # <<--- Nomor ditambahkan ke wait.json di sini
         
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
         msg = (
@@ -279,16 +280,189 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 # =======================
 async def telegram_loop(page):
     offset = 0
-    # TIDAK ADA LOGIKA AUTO-FORWARD DI SINI
     
     while True:
         data = tg_get_updates(offset)
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
-            
-            # --- MESSAGE & CALLBACK HANDLER ---
-            # ... (Logika Handler Anda yang sudah ada) ...
-            
+
+            if "message" in upd:
+                msg = upd["message"]
+                chat_id = msg["chat"]["id"]
+                user_id = msg["from"]["id"]
+                
+                first_name = msg["from"].get("first_name", "User")
+                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
+                text = msg.get("text", "")
+
+                # --- NEW MEMBER WELCOME HANDLER ---
+                if "new_chat_members" in msg and (chat_id == GROUP_ID_1 or chat_id == GROUP_ID_2):
+                    for member in msg["new_chat_members"]:
+                        if member["is_bot"]: continue
+                        member_first_name = member.get("first_name", "New User")
+                        member_mention = f"<a href='tg://user?id={member['id']}'>{member_first_name}</a>"
+                        welcome_message = (
+                            f"HEYY {member_mention} WELLCOME!!,\n"
+                            f"Ready to receive SMS? Get number at here {BOT_USERNAME_LINK}"
+                        )
+                        tg_send(chat_id, welcome_message)
+                    continue 
+
+                # --- ADMIN COMMAND HANDLER ---
+                if user_id == ADMIN_ID:
+                    if text.startswith("/add"):
+                        waiting_admin_input.add(user_id)
+                        prompt_msg_text = "Silahkan kirim daftar range dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>"
+                        msg_id = tg_send(user_id, prompt_msg_text)
+                        if msg_id:
+                            pending_message[user_id] = msg_id
+                        continue
+
+                if user_id in waiting_admin_input:
+                    waiting_admin_input.remove(user_id)
+                    new_ranges = []
+                    for line in text.strip().split('\n'):
+                        if ' > ' in line:
+                            parts = line.split(' > ', 1)
+                            range_prefix = parts[0].strip()
+                            country_name = parts[1].strip().upper()
+                            emoji = COUNTRY_EMOJI.get(country_name, "🗺️")
+                            new_ranges.append({
+                                "range": range_prefix, "country": country_name, "emoji": emoji
+                            })
+                    prompt_msg_id = pending_message.pop(user_id, None)
+                    if new_ranges:
+                        save_inline_ranges(new_ranges)
+                        if prompt_msg_id:
+                            tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menyimpan {len(new_ranges)} range ke inline.json.")
+                    else:
+                        if prompt_msg_id:
+                            tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
+                    continue
+                # --- END ADMIN COMMAND HANDLER ---
+                
+                # --- START COMMAND HANDLER ---
+                if text == "/start":
+                    is_member = is_user_in_both_groups(user_id)
+                    
+                    if is_member:
+                        verified_users.add(user_id) 
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
+                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}], 
+                            ]
+                        }
+                        msg_text = (
+                            f"✅ Verifikasi Berhasil, {mention}!\n\n"
+                            "Gunakan tombol di bawah:"
+                        )
+                        tg_send(user_id, msg_text, kb)
+                    else:
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}],
+                                [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}],
+                                [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],
+                            ]
+                        }
+                        msg_text = (
+                            f"Halo {mention} 👋\n"
+                            "Harap gabung kedua grup di bawah untuk verifikasi:"
+                        )
+                        tg_send(user_id, msg_text, kb)
+                    continue
+                # --- END START COMMAND HANDLER ---
+
+                if user_id in waiting_range:
+                    waiting_range.remove(user_id)
+                    prefix = text.strip()
+                    msg_id_to_edit = pending_message.pop(user_id, None) 
+                    
+                    if is_valid_phone_number(prefix):
+                        tg_send(user_id, "⚠️ Input tidak valid sebagai range. Silakan kirim prefix range, contoh: <code>9377009XXX</code>.")
+                        continue
+                        
+                    await process_user_input(page, user_id, prefix, msg_id_to_edit)
+                    continue
+
+            if "callback_query" in upd:
+                cq = upd["callback_query"]
+                user_id = cq["from"]["id"]
+                data_cb = cq["data"]
+                
+                chat_id = cq["message"]["chat"]["id"]
+                menu_msg_id = cq["message"]["message_id"]
+                
+                first_name = cq["from"].get("first_name", "User")
+                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
+
+
+                if data_cb == "verify":
+                    if not is_user_in_both_groups(user_id):
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}],
+                                [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}],
+                                [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],
+                            ]
+                        }
+                        tg_edit(chat_id, menu_msg_id, "❌ Belum gabung kedua grup. Silakan join dulu.", kb)
+                    else:
+                        verified_users.add(user_id)
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
+                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}],
+                            ]
+                        }
+                        msg_text = (
+                            f"✅ Verifikasi Berhasil, {mention}!\n\n"
+                            "Gunakan tombol di bawah:"
+                        )
+                        tg_edit(chat_id, menu_msg_id, msg_text, kb)
+                    continue
+
+                if data_cb == "getnum":
+                    if user_id not in verified_users:
+                        tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
+                        continue
+                    
+                    inline_ranges = load_inline_ranges()
+                    
+                    if inline_ranges:
+                        kb = generate_inline_keyboard(inline_ranges)
+                        msg_text = "Silahkan gunakan range di bawah atau Manual range untuk mendapatkan nomor."
+                        
+                        tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
+                        
+                        pending_message[user_id] = menu_msg_id
+                    else:
+                        waiting_range.add(user_id)
+                        tg_edit(chat_id, menu_msg_id, "Kirim range contoh: <code>9377009XXX</code>")
+                        pending_message[user_id] = menu_msg_id
+                    continue
+
+                if data_cb.startswith("select_range:"):
+                    if user_id not in verified_users:
+                        tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
+                        continue
+                        
+                    prefix = data_cb.split(":")[1]
+                    
+                    tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
+                    
+                    await process_user_input(page, user_id, prefix, menu_msg_id)
+                    continue
+
+                if data_cb == "manual_range":
+                    waiting_range.add(user_id)
+                    
+                    tg_edit(chat_id, menu_msg_id, "<b>Get Number</b>\n\nKirim range contoh: <code>9377009XXX</code>")
+                    
+                    pending_message[user_id] = menu_msg_id
+                    continue
+
         await asyncio.sleep(1) # Jeda agar CPU tidak overload
 
 # =======================
@@ -339,8 +513,7 @@ async def main():
         print(f"[FATAL ERROR] An unexpected error occurred: {e}")
         
     finally:
-        # Hentikan proses sms.py saat main.py selesai/crash
-        if sms_process.poll() is None:
+        if 'sms_process' in locals() and sms_process.poll() is None:
             sms_process.terminate()
             print("[INFO] Terminated sms.py process.")
 
