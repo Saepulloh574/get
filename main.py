@@ -31,6 +31,10 @@ sent_numbers = set()
 # otp_state: {number: {"user_id": int, "range": str, "message": str, "timestamp": float, "country": str}}
 otp_state = {} 
 
+# --- Halaman Global (Single Tab) ---
+global_page = None 
+# -----------------------------------
+
 # =======================
 # COUNTRY EMOJI
 # =======================
@@ -215,11 +219,10 @@ async def get_otp_message(page, number_to_check):
 # =======================
 # PROCESS USER INPUT
 # =======================
-async def process_user_input(browser_context, user_id, prefix, message_id_to_edit=None):
-    page = None
+# Menerima page sebagai parameter, yang sekarang adalah global_page
+async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     try:
-        # 1. Buka Page/Tab baru
-        page = await browser_context.new_page()
+        # 1. Navigasi ulang untuk memastikan page bersih
         # Menggunakan wait_until="domcontentloaded" untuk load yang lebih cepat
         await page.goto(SCRAPE_URL, wait_until="domcontentloaded", timeout=20000) 
 
@@ -295,26 +298,22 @@ async def process_user_input(browser_context, user_id, prefix, message_id_to_edi
             if user_id in pending_message: del pending_message[user_id]
             
     finally:
-        # 5. Tutup Page/Tab
-        if page:
-            await page.close()
+        # HAPUS page.close()
+        pass
 
 
 # =======================
 # OTP UPDATE LOOP (Dioptimalkan)
 # =======================
-async def process_otp_update(browser_context):
+# Menerima page sebagai parameter, yang sekarang adalah global_page
+async def process_otp_update(page):
     MIN_INTERVAL = 5 # Target interval minimum (termasuk waktu scraping)
     
     while True:
-        page = None
         start_time = time.time() 
 
         try:
-            # 1. Buka Page/Tab baru
-            page = await browser_context.new_page()
-            
-            # Navigasi cepat
+            # 1. Navigasi ulang untuk memastikan page bersih sebelum cek OTP
             await page.goto(SCRAPE_URL, wait_until="domcontentloaded", timeout=10000) 
             
             # Jeda diperpendek
@@ -389,9 +388,8 @@ async def process_otp_update(browser_context):
             await asyncio.sleep(5) 
             
         finally:
-            # 2. Tutup Page/Tab
-            if page:
-                await page.close()
+            # HAPUS page.close()
+            pass
 
         # Hitung durasi proses
         end_time = time.time()
@@ -409,7 +407,8 @@ async def process_otp_update(browser_context):
 # =======================
 # TELEGRAM LOOP
 # =======================
-async def telegram_loop(browser_context):
+# Menerima page sebagai parameter, yang sekarang adalah global_page
+async def telegram_loop(page):
     offset = 0
     while True:
         data = tg_get_updates(offset)
@@ -465,7 +464,7 @@ async def telegram_loop(browser_context):
                     waiting_range.remove(user_id)
                     prefix = text.strip()
                     msg_id_to_edit = pending_message.pop(user_id, None) 
-                    await process_user_input(browser_context, user_id, prefix, msg_id_to_edit)
+                    await process_user_input(page, user_id, prefix, msg_id_to_edit)
                     continue
 
             if "callback_query" in upd:
@@ -513,7 +512,7 @@ async def telegram_loop(browser_context):
                         
                     prefix = data_cb.split(":")[1]
                     tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
-                    await process_user_input(browser_context, user_id, prefix, menu_msg_id)
+                    await process_user_input(page, user_id, prefix, menu_msg_id)
                     continue
 
                 if data_cb == "manual_range":
@@ -529,27 +528,35 @@ async def telegram_loop(browser_context):
 # =======================
 async def main():
     load_otp_state()
-    
+    global global_page # Menggunakan variabel global
+
     async with async_playwright() as p:
         try:
             browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             browser_context = browser.contexts[0] 
             
-            # --- MODIFIKASI DILAKUKAN DI SINI ---
-            # Menghapus loop cleanup yang menutup semua tab yang sudah ada.
-            # Bot akan membuat page/tab baru secara otomatis saat dibutuhkan.
+            # --- Perubahan Kunci di sini ---
+            # Coba gunakan page pertama yang sudah ada, atau buat satu page baru jika tidak ada
+            if browser_context.pages:
+                global_page = browser_context.pages[0]
+                print("[OK] Connected to existing Chrome. Using the first existing page.")
+            else:
+                global_page = await browser_context.new_page()
+                print("[OK] Connected to existing Chrome. Created a single new page.")
+            
+            # Awal navigasi untuk memastikan page siap
+            await global_page.goto(SCRAPE_URL, wait_until="domcontentloaded", timeout=10000)
 
-            print("[OK] Connected to existing Chrome. Old pages kept open.")
         except Exception as e:
             print(f"[ERROR] Gagal terhubung ke Chrome CDP. Pastikan Chrome berjalan dengan flag --remote-debugging-port=9222. Error: {e}")
             return 
 
         tg_send(GROUP_ID, "✅ Bot Number Active!")
 
-        # Jalankan loop Telegram dan loop update OTP secara paralel, passing browser_context
+        # Jalankan loop Telegram dan loop update OTP secara paralel, MENGGUNAKAN global_page
         await asyncio.gather(
-            telegram_loop(browser_context),
-            process_otp_update(browser_context)
+            telegram_loop(global_page),
+            process_otp_update(global_page)
         )
 
 if __name__ == "__main__":
