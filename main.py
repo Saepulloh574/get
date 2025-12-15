@@ -8,14 +8,18 @@ from playwright.async_api import async_playwright
 # CONFIG
 # =======================
 BOT_TOKEN = "8047851913:AAFGXlRL_e7JcLEMtOqUuuNd_46ZmIoGJN8"
-GROUP_ID = -1003492226491  # HARUS NEGATIF
+GROUP_ID_1 = -1003492226491  # GRUP UTAMA (Contoh: https://t.me/+E5grTSLZvbpiMTI1)
+GROUP_ID_2 = -1002383814362  # <--- GANTI ID INI DENGAN ID GRUP KEDUA (zura14g)
+# CATATAN: ID Grup harus NEGATIF, GANTI placeholder ID ini dengan ID -100... yang benar dari https://t.me/zura14g
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CACHE_FILE = "cache.json"
 
 # --- NEW CONFIG ---
-ADMIN_ID = 7184123643  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
+ADMIN_ID = 7184123643  
 INLINE_RANGE_FILE = "inline.json"
-BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" # GANTI DENGAN LINK BOT ANDA
+BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
+GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" # Link Grup 1
+GROUP_LINK_2 = "https://t.me/zura14g"           # Link Grup 2 (Tambahan)
 
 # =======================
 # GLOBAL STATE
@@ -23,8 +27,8 @@ BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" # GANTI DENGAN LINK BOT ANDA
 verified_users = set()
 waiting_range = set()
 waiting_admin_input = set()
-pending_message = {}  # user_id -> message_id Telegram sementara
-sent_numbers = set() # NOTE: sent_numbers tidak digunakan di kode ini, tapi dipertahankan dari kode asli.
+pending_message = {} 
+sent_numbers = set()
 
 # =======================
 # COUNTRY EMOJI
@@ -137,16 +141,22 @@ def tg_get_updates(offset):
         print(f"[ERROR GET UPDATES] {e}")
         return {"ok": False, "result": []}
 
-def is_user_in_group(user_id):
+def is_user_in_group(user_id, group_id):
+    """Mengecek keanggotaan pengguna di grup tertentu."""
     try:
-        r = requests.get(f"{API}/getChatMember", params={"chat_id": GROUP_ID, "user_id": user_id}).json()
+        r = requests.get(f"{API}/getChatMember", params={"chat_id": group_id, "user_id": user_id}).json()
         if not r.get("ok"):
-            # Jika user belum pernah start bot, bisa jadi error, anggap belum di grup
             return False
         return r["result"]["status"] in ["member", "administrator", "creator"]
     except Exception as e:
-        print(f"[ERROR CHECK GROUP] {e}")
+        print(f"[ERROR CHECK GROUP {group_id}] {e}")
         return False
+
+def is_user_in_both_groups(user_id):
+    """Mengecek keanggotaan pengguna di GRUP 1 DAN GRUP 2."""
+    is_member_1 = is_user_in_group(user_id, GROUP_ID_1)
+    is_member_2 = is_user_in_group(user_id, GROUP_ID_2)
+    return is_member_1 and is_member_2
 
 # =======================
 # PARSE NOMOR
@@ -196,7 +206,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         await page.fill('input[name="numberrange"]', prefix)
         
         # 2. Jeda 0.1 detik
-        await asyncio.sleep(0.2) 
+        await asyncio.sleep(0.1) 
 
         # 3. Klik Get Number
         await page.click("#getNumberBtn")
@@ -249,7 +259,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         inline_kb = {
             "inline_keyboard": [
                 [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}] # Ganti jika link grup berubah
+                [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}] # Menggunakan link grup 1 untuk OTP Grup
             ]
         }
 
@@ -289,9 +299,9 @@ async def telegram_loop(page):
                 text = msg.get("text", "")
 
                 # --- NEW MEMBER WELCOME HANDLER ---
-                if "new_chat_members" in msg and chat_id == GROUP_ID:
+                # Hanya kirim pesan jika anggota baru bergabung di salah satu grup yang dimonitor
+                if "new_chat_members" in msg and (chat_id == GROUP_ID_1 or chat_id == GROUP_ID_2):
                     for member in msg["new_chat_members"]:
-                        # Cek apakah anggota baru adalah bot itu sendiri (biasanya diabaikan)
                         if member["is_bot"]:
                             continue
                             
@@ -302,15 +312,14 @@ async def telegram_loop(page):
                             f"HEYY {member_mention} WELLCOME!!,\n"
                             f"Ready to receive SMS? Get number at here {BOT_USERNAME_LINK}"
                         )
-                        # Kirim pesan sambutan ke grup
-                        tg_send(GROUP_ID, welcome_message)
-                    continue # Lanjutkan ke update berikutnya
+                        # Kirim pesan sambutan ke grup yang baru dimasuki
+                        tg_send(chat_id, welcome_message)
+                    continue 
 
                 # --- ADMIN COMMAND HANDLER ---
                 if user_id == ADMIN_ID:
                     if text.startswith("/add"):
                         waiting_admin_input.add(user_id)
-                        # Kirim pesan baru, ID pesan disimpan untuk diedit selanjutnya
                         prompt_msg_text = "Silahkan kirim daftar range dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>"
                         msg_id = tg_send(user_id, prompt_msg_text)
                         if msg_id:
@@ -336,11 +345,9 @@ async def telegram_loop(page):
                                 "emoji": emoji
                             })
 
-                    # Ambil message_id dari prompt sebelumnya
                     prompt_msg_id = pending_message.pop(user_id, None)
                     
                     if new_ranges:
-                        # Ini menimpa isi inline.json, tidak append
                         save_inline_ranges(new_ranges)
                         if prompt_msg_id:
                             tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menyimpan {len(new_ranges)} range ke inline.json.")
@@ -353,17 +360,17 @@ async def telegram_loop(page):
                 
                 # --- START COMMAND HANDLER (Logika Cerdas) ---
                 if text == "/start":
-                    # Cek status keanggotaan di grup
-                    is_member = is_user_in_group(user_id)
+                    # Cek status keanggotaan di DUA grup
+                    is_member = is_user_in_both_groups(user_id)
                     
                     if is_member:
-                        # User Sudah Gabung Grup (Anggap Terverifikasi)
+                        # User Sudah Gabung Kedua Grup
                         verified_users.add(user_id) 
                         
                         kb = {
                             "inline_keyboard": [
                                 [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}], # Ganti dengan link admin sebenarnya
+                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}], 
                             ]
                         }
                         
@@ -371,21 +378,20 @@ async def telegram_loop(page):
                             f"✅ Verifikasi Berhasil, {mention}!\n\n"
                             "Gunakan tombol di bawah:"
                         )
-                        # Mengirim pesan baru
                         tg_send(user_id, msg_text, kb)
                     else:
-                        # User Belum Gabung Grup
+                        # User Belum Gabung Kedua Grup
                         kb = {
                             "inline_keyboard": [
-                                [{"text": "📌 Gabung Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}],
-                                [{"text": "✅ Verifikasi", "callback_data": "verify"}],
+                                [{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}],
+                                [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}],
+                                [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],
                             ]
                         }
                         msg_text = (
                             f"Halo {mention} 👋\n"
-                            "Gabung grup untuk verifikasi."
+                            "Harap gabung kedua grup di bawah untuk verifikasi:"
                         )
-                        # Mengirim pesan baru
                         tg_send(user_id, msg_text, kb)
                         
                     continue
@@ -395,10 +401,8 @@ async def telegram_loop(page):
                     waiting_range.remove(user_id)
                     prefix = text.strip()
                     
-                    # Message ID yang akan diedit adalah pesan "Kirim range contoh..."
                     msg_id_to_edit = pending_message.pop(user_id, None) 
                     
-                    # Memanggil process_user_input dengan ID pesan untuk diedit
                     await process_user_input(page, user_id, prefix, msg_id_to_edit)
                     
                     continue
@@ -411,16 +415,23 @@ async def telegram_loop(page):
                 chat_id = cq["message"]["chat"]["id"]
                 menu_msg_id = cq["message"]["message_id"]
                 
-                # Mendapatkan nama untuk mention (HTML Parse Mode)
                 first_name = cq["from"].get("first_name", "User")
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
 
 
                 if data_cb == "verify":
-                    if not is_user_in_group(user_id):
-                        # Edit pesan callback
-                        tg_edit(chat_id, menu_msg_id, "❌ Belum gabung grup, silakan join dulu.")
+                    if not is_user_in_both_groups(user_id):
+                        # Jika verifikasi GAGAL
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}],
+                                [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}],
+                                [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],
+                            ]
+                        }
+                        tg_edit(chat_id, menu_msg_id, "❌ Belum gabung kedua grup. Silakan join dulu.", kb)
                     else:
+                        # Jika verifikasi BERHASIL
                         verified_users.add(user_id)
                         kb = {
                             "inline_keyboard": [
@@ -428,7 +439,6 @@ async def telegram_loop(page):
                                 [{"text": "👨‍💼 Admin", "url": "https://t.me/"}],
                             ]
                         }
-                        # Edit pesan callback
                         msg_text = (
                             f"✅ Verifikasi Berhasil, {mention}!\n\n"
                             "Gunakan tombol di bawah:"
@@ -438,7 +448,6 @@ async def telegram_loop(page):
 
                 if data_cb == "getnum":
                     if user_id not in verified_users:
-                        # Edit pesan callback
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
                         continue
                     
@@ -448,16 +457,12 @@ async def telegram_loop(page):
                         kb = generate_inline_keyboard(inline_ranges)
                         msg_text = "Silahkan gunakan range di bawah atau Manual range untuk mendapatkan nomor."
                         
-                        # Edit pesan callback menjadi menu range
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
                         
-                        # Simpan ID pesan menu ini agar dapat diedit nanti jika user memilih manual range
                         pending_message[user_id] = menu_msg_id
                     else:
-                        # Jika inline range kosong, langsung minta input manual
                         waiting_range.add(user_id)
                         tg_edit(chat_id, menu_msg_id, "Kirim range contoh: <code>9377009XXX</code>")
-                        # Simpan ID pesan ini agar dapat diedit oleh process_user_input
                         pending_message[user_id] = menu_msg_id
                     continue
 
@@ -468,20 +473,16 @@ async def telegram_loop(page):
                         
                     prefix = data_cb.split(":")[1]
                     
-                    # Edit pesan menu menjadi status processing
                     tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
                     
-                    # Memanggil process_user_input dengan ID pesan menu untuk diedit
                     await process_user_input(page, user_id, prefix, menu_msg_id)
                     continue
 
                 if data_cb == "manual_range":
                     waiting_range.add(user_id)
                     
-                    # Edit pesan menu menjadi permintaan input manual
                     tg_edit(chat_id, menu_msg_id, "<b>Get Number</b>\n\nKirim range contoh: <code>9377009XXX</code>")
                     
-                    # Simpan ID pesan ini agar dapat diedit oleh process_user_input (untuk kasus input teks)
                     pending_message[user_id] = menu_msg_id
                     continue
 
@@ -500,20 +501,27 @@ async def main():
     if not os.path.exists(INLINE_RANGE_FILE):
         with open(INLINE_RANGE_FILE, "w") as f:
             f.write("[]")
+            
+    # Perhatian penting untuk mengganti ID
+    if GROUP_ID_2 == -1001234567890:
+        print("\n=======================================================")
+        print("!!! PERINGATAN PENTING !!!")
+        print("Silakan GANTI nilai GROUP_ID_2 (-1001234567890) ")
+        print("dengan ID numerik yang BENAR dari grup https://t.me/zura14g.")
+        print("Bot TIDAK AKAN berfungsi dengan benar untuk verifikasi dua grup tanpa ID yang valid.")
+        print("=======================================================\n")
+
 
     try:
         async with async_playwright() as p:
-            # Menggunakan connect_over_cdp untuk browser yang sudah berjalan
             browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             
-            # Cek apakah ada konteks yang terbuka
             if not browser.contexts:
                 print("[ERROR] No browser context found. Ensure Chrome is launched with --remote-debugging-port=9222.")
                 return
 
             context = browser.contexts[0]
             
-            # Cek apakah ada halaman yang terbuka
             if not context.pages:
                 print("[ERROR] No page found in the first context. Ensure the target web page is open.")
                 return
@@ -521,8 +529,10 @@ async def main():
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
     
-            # Kirim notifikasi bot aktif ke grup
-            tg_send(GROUP_ID, "✅ Bot Number Active!")
+            # Kirim notifikasi bot aktif ke grup utama
+            tg_send(GROUP_ID_1, "✅ Bot Number Active!")
+            # Kirim notifikasi ke grup kedua juga
+            tg_send(GROUP_ID_2, "✅ Bot Number Active!")
     
             await telegram_loop(page)
             
