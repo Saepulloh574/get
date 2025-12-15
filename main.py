@@ -21,9 +21,9 @@ INLINE_RANGE_FILE = "inline.json"
 # =======================
 verified_users = set()
 waiting_range = set()
-waiting_admin_input = set() # NEW
+waiting_admin_input = set()
 pending_message = {}  # user_id -> message_id Telegram sementara
-sent_numbers = set()
+sent_numbers = set() # NOTE: sent_numbers tidak digunakan di kode ini, tapi dipertahankan dari kode asli.
 
 # =======================
 # COUNTRY EMOJI
@@ -47,7 +47,10 @@ COUNTRY_EMOJI = {
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
-            return json.load(f)
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
     return []
 
 def save_cache(number_entry):
@@ -61,7 +64,7 @@ def is_in_cache(number):
     return any(entry["number"] == number for entry in cache)
 
 # =======================
-# INLINE RANGE UTILS (NEW)
+# INLINE RANGE UTILS
 # =======================
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
@@ -107,25 +110,42 @@ def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = reply_markup
-    r = requests.post(f"{API}/sendMessage", json=data).json()
-    if r.get("ok"):
-        return r["result"]["message_id"]
-    return None
+    try:
+        r = requests.post(f"{API}/sendMessage", json=data).json()
+        if r.get("ok"):
+            return r["result"]["message_id"]
+        print(f"[ERROR SEND] {r.get('description', 'Unknown Error')}")
+        return None
+    except Exception as e:
+        print(f"[ERROR SEND REQUEST] {e}")
+        return None
 
 def tg_edit(chat_id, message_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = reply_markup
-    requests.post(f"{API}/editMessageText", json=data)
+    try:
+        requests.post(f"{API}/editMessageText", json=data)
+    except Exception as e:
+        print(f"[ERROR EDIT REQUEST] {e}")
 
 def tg_get_updates(offset):
-    return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 30}).json()
+    try:
+        return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 30}).json()
+    except Exception as e:
+        print(f"[ERROR GET UPDATES] {e}")
+        return {"ok": False, "result": []}
 
 def is_user_in_group(user_id):
-    r = requests.get(f"{API}/getChatMember", params={"chat_id": GROUP_ID, "user_id": user_id}).json()
-    if not r.get("ok"):
+    try:
+        r = requests.get(f"{API}/getChatMember", params={"chat_id": GROUP_ID, "user_id": user_id}).json()
+        if not r.get("ok"):
+            # Jika user belum pernah start bot, bisa jadi error, anggap belum di grup
+            return False
+        return r["result"]["status"] in ["member", "administrator", "creator"]
+    except Exception as e:
+        print(f"[ERROR CHECK GROUP] {e}")
         return False
-    return r["result"]["status"] in ["member", "administrator", "creator"]
 
 # =======================
 # PARSE NOMOR
@@ -143,26 +163,31 @@ async def get_number_and_country(page):
             continue
             
         # Skip nomor yang sudah ada status sukses/gagal
+        # Kriteria: Harus ada elemen .phone-number DAN tidak ada status sukses/gagal
         if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
             continue
             
         country_el = await row.query_selector(".badge.bg-primary")
         country = (await country_el.inner_text()).strip().upper() if country_el else "-"
-        return number, country
+        
+        # Cek apakah nomor valid sebelum dikembalikan
+        if number and len(number) > 5: # Asumsi nomor valid setidaknya 6 digit
+            return number, country
+            
     return None, None
 
 # =======================
-# PROCESS USER INPUT (FINAL CORRECTED)
+# PROCESS USER INPUT
 # =======================
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     try:
         # Menentukan Message ID yang akan diedit (Untuk menjaga chat tetap bersih)
         if message_id_to_edit:
             msg_id = message_id_to_edit
-            tg_edit(user_id, msg_id, f"⏳ Sedang mengambil Number...\nRange: {prefix}")
+            tg_edit(user_id, msg_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
         else:
             # Jika tidak ada ID (biasanya dari input teks manual), kirim pesan baru
-            msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: {prefix}")
+            msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
             if not msg_id: return
             
         # 1. Isi input
@@ -191,7 +216,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         # Logika Tambahan: Jeda 3 detik dan coba scrape lagi jika percobaan pertama gagal
         if not number:
             # Edit pesan menjadi status retry
-            tg_edit(user_id, msg_id, f"⏳ Nomor belum muncul, mencoba lagi dalam 3 detik...\nRange: {prefix}")
+            tg_edit(user_id, msg_id, f"⏳ Nomor belum muncul, mencoba lagi dalam 3 detik...\nRange: <code>{prefix}</code>")
             
             # Jeda 3 detik
             await asyncio.sleep(3) 
@@ -223,7 +248,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
         inline_kb = {
             "inline_keyboard": [
                 [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}]
+                [{"text": "🔐 OTP Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}] # Ganti jika link grup berubah
             ]
         }
 
@@ -255,7 +280,10 @@ async def telegram_loop(page):
             if "message" in upd:
                 msg = upd["message"]
                 user_id = msg["chat"]["id"]
-                username = msg["from"].get("username", "-")
+                
+                # Mendapatkan nama untuk mention (HTML Parse Mode)
+                first_name = msg["from"].get("first_name", "User")
+                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
 
                 # --- ADMIN COMMAND HANDLER ---
@@ -263,7 +291,8 @@ async def telegram_loop(page):
                     if text.startswith("/add"):
                         waiting_admin_input.add(user_id)
                         # Kirim pesan baru, ID pesan disimpan untuk diedit selanjutnya
-                        msg_id = tg_send(user_id, "Silahkan kirim daftar range dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>")
+                        prompt_msg_text = "Silahkan kirim daftar range dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>"
+                        msg_id = tg_send(user_id, prompt_msg_text)
                         if msg_id:
                             pending_message[user_id] = msg_id
                         continue
@@ -291,6 +320,7 @@ async def telegram_loop(page):
                     prompt_msg_id = pending_message.pop(user_id, None)
                     
                     if new_ranges:
+                        # Ini menimpa isi inline.json, tidak append
                         save_inline_ranges(new_ranges)
                         if prompt_msg_id:
                             tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menyimpan {len(new_ranges)} range ke inline.json.")
@@ -300,18 +330,46 @@ async def telegram_loop(page):
                     
                     continue
                 # --- END ADMIN COMMAND HANDLER ---
-
-
+                
+                # --- START COMMAND HANDLER (Logika Cerdas) ---
                 if text == "/start":
-                    kb = {
-                        "inline_keyboard": [
-                            [{"text": "📌 Gabung Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}],
-                            [{"text": "✅ Verifikasi", "callback_data": "verify"}],
-                        ]
-                    }
-                    # Mengirim pesan baru
-                    tg_send(user_id, f"Halo @{username} 👋\nGabung grup untuk verifikasi.", kb)
+                    # Cek status keanggotaan di grup
+                    is_member = is_user_in_group(user_id)
+                    
+                    if is_member:
+                        # User Sudah Gabung Grup (Anggap Terverifikasi)
+                        verified_users.add(user_id) 
+                        
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 Get Number", "callback_data": "getnum"}],
+                                [{"text": "👨‍💼 Admin", "url": "https://t.me/"}], # Ganti dengan link admin sebenarnya
+                            ]
+                        }
+                        
+                        msg_text = (
+                            f"✅ Verifikasi Berhasil, {mention}!\n\n"
+                            "Gunakan tombol di bawah:"
+                        )
+                        # Mengirim pesan baru
+                        tg_send(user_id, msg_text, kb)
+                    else:
+                        # User Belum Gabung Grup
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📌 Gabung Grup", "url": "https://t.me/+E5grTSLZvbpiMTI1"}],
+                                [{"text": "✅ Verifikasi", "callback_data": "verify"}],
+                            ]
+                        }
+                        msg_text = (
+                            f"Halo {mention} 👋\n"
+                            "Gabung grup untuk verifikasi."
+                        )
+                        # Mengirim pesan baru
+                        tg_send(user_id, msg_text, kb)
+                        
                     continue
+                # --- END START COMMAND HANDLER ---
 
                 if user_id in waiting_range:
                     waiting_range.remove(user_id)
@@ -332,6 +390,11 @@ async def telegram_loop(page):
                 
                 chat_id = cq["message"]["chat"]["id"]
                 menu_msg_id = cq["message"]["message_id"]
+                
+                # Mendapatkan nama untuk mention (HTML Parse Mode)
+                first_name = cq["from"].get("first_name", "User")
+                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
+
 
                 if data_cb == "verify":
                     if not is_user_in_group(user_id):
@@ -346,7 +409,11 @@ async def telegram_loop(page):
                             ]
                         }
                         # Edit pesan callback
-                        tg_edit(chat_id, menu_msg_id, f"✅ Verifikasi Berhasil!\n\nGunakan tombol di bawah:", kb)
+                        msg_text = (
+                            f"✅ Verifikasi Berhasil, {mention}!\n\n"
+                            "Gunakan tombol di bawah:"
+                        )
+                        tg_edit(chat_id, menu_msg_id, msg_text, kb)
                     continue
 
                 if data_cb == "getnum":
@@ -359,7 +426,7 @@ async def telegram_loop(page):
                     
                     if inline_ranges:
                         kb = generate_inline_keyboard(inline_ranges)
-                        msg_text = "Silahksn gunakan range di bawah atau Manual range untuk mendapatkan nomor."
+                        msg_text = "Silahkan gunakan range di bawah atau Manual range untuk mendapatkan nomor."
                         
                         # Edit pesan callback menjadi menu range
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
@@ -404,15 +471,44 @@ async def telegram_loop(page):
 # MAIN
 # =======================
 async def main():
-    async with async_playwright() as p:
-        browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-        context = browser.contexts[0]
-        page = context.pages[0]
-        print("[OK] Connected to existing Chrome")
+    print("[INFO] Starting bot...")
+    
+    # Inisialisasi file jika belum ada
+    if not os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "w") as f:
+            f.write("[]")
+    if not os.path.exists(INLINE_RANGE_FILE):
+        with open(INLINE_RANGE_FILE, "w") as f:
+            f.write("[]")
 
-        tg_send(GROUP_ID, "✅ Bot Number Active!")
+    try:
+        async with async_playwright() as p:
+            # Menggunakan connect_over_cdp untuk browser yang sudah berjalan
+            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            
+            # Cek apakah ada konteks yang terbuka
+            if not browser.contexts:
+                print("[ERROR] No browser context found. Ensure Chrome is launched with --remote-debugging-port=9222.")
+                return
 
-        await telegram_loop(page)
+            context = browser.contexts[0]
+            
+            # Cek apakah ada halaman yang terbuka
+            if not context.pages:
+                print("[ERROR] No page found in the first context. Ensure the target web page is open.")
+                return
+                
+            page = context.pages[0]
+            print("[OK] Connected to existing Chrome via CDP on port 9222")
+    
+            # Kirim notifikasi bot aktif ke grup
+            tg_send(GROUP_ID, "✅ Bot Number Active!")
+    
+            await telegram_loop(page)
+            
+    except Exception as e:
+        print(f"[FATAL ERROR] Playwright/Browser connection failed: {e}")
+        print("Pastikan Anda menjalankan Chrome dengan flag '--remote-debugging-port=9222'.")
 
 if __name__ == "__main__":
     asyncio.run(main())
