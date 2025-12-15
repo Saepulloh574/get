@@ -679,8 +679,8 @@ async def main():
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
     
-            tg_send(GROUP_ID_1, "✅ Bot Number Active!")
-            tg_send(GROUP_ID_2, "✅ Bot Number Active!")
+            # tg_send(GROUP_ID_1, "✅ Bot Number Active!") # Dihapus
+            # tg_send(GROUP_ID_2, "✅ Bot Number Active!") # Dihapus
     
             await telegram_loop(page)
             
