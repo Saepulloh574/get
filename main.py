@@ -1,17 +1,14 @@
-# main.py (VERSI DIPERBAIKI: Handler Pesan dan Callback DIKEMBALIKAN)
 import asyncio
 import json
 import os
 import requests
 import re
 from playwright.async_api import async_playwright
-# Import untuk environment dan menjalankan script lain
 from dotenv import load_dotenv 
 import subprocess 
 import sys 
 import time
 
-# --- LOAD ENVIRONMENT VARIABLES ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
@@ -19,9 +16,6 @@ GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# =======================
-# CONFIG/FILE PATHS
-# =======================
 CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"   
@@ -30,27 +24,18 @@ BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot"
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g"           
 
-# =======================
-# GLOBAL STATE
-# =======================
 verified_users = set()
 waiting_range = set()
 waiting_admin_input = set()
 pending_message = {} 
 sent_numbers = set()
 
-# =======================
-# COUNTRY EMOJI
-# =======================
 COUNTRY_EMOJI = {
     "NEPAL": "🇳🇵", "IVORY COAST": "🇨🇮", "GUINEA": "🇬🇳", "CENTRAL AFRIKA": "🇨🇫",
     "TOGO": "🇹🇬", "TAJIKISTAN": "🇹🇯", "BENIN": "🇧🇯", "SIERRA LEONE": "🇸🇱",
     "MADAGASCAR": "🇲🇬", "AFGANISTAN": "🇦🇫",
 }
 
-# =======================
-# CACHE UTILS
-# =======================
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
@@ -68,9 +53,6 @@ def is_in_cache(number):
     cache = load_cache()
     return any(entry["number"] == number for entry in cache)
 
-# =======================
-# INLINE RANGE UTILS
-# =======================
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
         with open(INLINE_RANGE_FILE, "r") as f:
@@ -102,9 +84,6 @@ def generate_inline_keyboard(ranges):
     
     return {"inline_keyboard": keyboard}
 
-# =======================
-# WAIT UTILS
-# =======================
 def load_wait_list():
     if os.path.exists(WAIT_FILE):
         with open(WAIT_FILE, "r") as f:
@@ -121,13 +100,9 @@ def add_to_wait_list(number, user_id):
     normalized_number = normalize_number(number)
     
     if not any(item['number'] == normalized_number for item in wait_list):
-        # Penting: Tambahkan timestamp agar sms.py bisa menghapus yang timeout
         wait_list.append({"number": normalized_number, "user_id": user_id, "timestamp": time.time()})
         save_wait_list(wait_list)
 
-# =======================
-# HELPER UTILS
-# =======================
 def normalize_number(number):
     normalized_number = number.strip().replace(" ", "").replace("-", "")
     if not normalized_number.startswith('+'):
@@ -137,9 +112,6 @@ def normalize_number(number):
 def is_valid_phone_number(text):
     return re.fullmatch(r"^\+?\d{6,15}$", text.replace(" ", "").replace("-", ""))
 
-# =======================
-# TELEGRAM UTILS
-# =======================
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
@@ -165,7 +137,6 @@ def tg_edit(chat_id, message_id, text, reply_markup=None):
 
 def tg_get_updates(offset):
     try:
-        # Timeout 1 detik untuk non-blocking
         return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 1}).json() 
     except Exception as e:
         print(f"[ERROR GET UPDATES] {e}")
@@ -185,9 +156,6 @@ def is_user_in_both_groups(user_id):
     is_member_2 = is_user_in_group(user_id, GROUP_ID_2)
     return is_member_1 and is_member_2
 
-# =======================
-# PLAYWRIGHT/FETCH LOGIC
-# =======================
 async def get_number_and_country(page):
     rows = await page.query_selector_all("tbody tr")
     for row in rows:
@@ -216,13 +184,11 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
             if not msg_id: return
             
-        # 1. Isi input dan klik
         await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
         await page.fill('input[name="numberrange"]', prefix)
         await asyncio.sleep(0.1) 
         await page.click("#getNumberBtn")
 
-        # 2. Refresh dan scrape
         await asyncio.sleep(1.5) 
         await page.reload()
         await page.wait_for_load_state("load") 
@@ -236,14 +202,13 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             number, country = await get_number_and_country(page)
         
         if not number:
-            tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET ULANG")
+            tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET NUMBER ULANG")
             if user_id in pending_message and pending_message[user_id] == msg_id:
                 del pending_message[user_id]
             return
 
-        # Simpan ke cache dan daftar tunggu
         save_cache({"number": number, "country": country})
-        add_to_wait_list(number, user_id) # <<--- Nomor ditambahkan ke wait.json di sini
+        add_to_wait_list(number, user_id) 
         
         emoji = COUNTRY_EMOJI.get(country, "🗺️")
         msg = (
@@ -251,13 +216,13 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             f"📞 Number  : <code>{number}</code>\n"
             f"{emoji} COUNTRY : {country}\n"
             f"🏷️ Range   : <code>{prefix}</code>\n\n"
-            "**🤖 Nomor telah dimasukkan ke daftar tunggu otomatis.**\n"
-            "**OTP akan dikirimkan ke chat ini secara instan jika sudah tersedia.**"
+            "<b>🤖 Nomor telah dimasukkan ke daftar tunggu otomatis.</b>\n"
+            "<b>OTP akan dikirimkan ke chat ini secara instan jika sudah tersedia.</b>"
         )
 
         inline_kb = {
             "inline_keyboard": [
-                [{"text": "📲 Get Number (Baru)", "callback_data": "getnum"}],
+                [{"text": "📲 Get Number", "callback_data": "getnum"}],
                 [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
             ]
         }
@@ -275,9 +240,6 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             if user_id in pending_message:
                 del pending_message[user_id]
 
-# =======================
-# TELEGRAM LOOP
-# =======================
 async def telegram_loop(page):
     offset = 0
     
@@ -295,7 +257,6 @@ async def telegram_loop(page):
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
 
-                # --- NEW MEMBER WELCOME HANDLER ---
                 if "new_chat_members" in msg and (chat_id == GROUP_ID_1 or chat_id == GROUP_ID_2):
                     for member in msg["new_chat_members"]:
                         if member["is_bot"]: continue
@@ -308,7 +269,6 @@ async def telegram_loop(page):
                         tg_send(chat_id, welcome_message)
                     continue 
 
-                # --- ADMIN COMMAND HANDLER ---
                 if user_id == ADMIN_ID:
                     if text.startswith("/add"):
                         waiting_admin_input.add(user_id)
@@ -339,9 +299,7 @@ async def telegram_loop(page):
                         if prompt_msg_id:
                             tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
                     continue
-                # --- END ADMIN COMMAND HANDLER ---
                 
-                # --- START COMMAND HANDLER ---
                 if text == "/start":
                     is_member = is_user_in_both_groups(user_id)
                     
@@ -372,7 +330,6 @@ async def telegram_loop(page):
                         )
                         tg_send(user_id, msg_text, kb)
                     continue
-                # --- END START COMMAND HANDLER ---
 
                 if user_id in waiting_range:
                     waiting_range.remove(user_id)
@@ -463,11 +420,7 @@ async def telegram_loop(page):
                     pending_message[user_id] = menu_msg_id
                     continue
 
-        await asyncio.sleep(1) # Jeda agar CPU tidak overload
-
-# =======================
-# MAIN
-# =======================
+        await asyncio.sleep(1) 
 
 def initialize_files():
     files = [CACHE_FILE, INLINE_RANGE_FILE, SMC_FILE, WAIT_FILE]
@@ -481,7 +434,6 @@ async def main():
     
     initialize_files()
     
-    # --- MENJALANKAN SCRIPT SMS.PY DI BACKGROUND ---
     try:
         sms_process = subprocess.Popen([sys.executable, "sms.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True)
         print(f"[INFO] Started sms.py process with PID: {sms_process.pid}")
@@ -489,7 +441,6 @@ async def main():
         print(f"[FATAL ERROR] Failed to start sms.py: {e}")
         return
     
-    # --- LANJUTKAN DENGAN BOT TELEGRAM/PLAYWRIGHT ---
     try:
         async with async_playwright() as p:
             try:
