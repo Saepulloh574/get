@@ -535,14 +535,11 @@ async def main():
             browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             browser_context = browser.contexts[0] 
             
-            # Tutup semua page/tab lama di konteks ini untuk memastikan kebersihan
-            for page in browser_context.pages:
-                try:
-                    await page.close()
-                except Exception:
-                    pass # Abaikan jika page sudah tertutup
+            # --- MODIFIKASI DILAKUKAN DI SINI ---
+            # Menghapus loop cleanup yang menutup semua tab yang sudah ada.
+            # Bot akan membuat page/tab baru secara otomatis saat dibutuhkan.
 
-            print("[OK] Connected to existing Chrome and cleaned up old pages.")
+            print("[OK] Connected to existing Chrome. Old pages kept open.")
         except Exception as e:
             print(f"[ERROR] Gagal terhubung ke Chrome CDP. Pastikan Chrome berjalan dengan flag --remote-debugging-port=9222. Error: {e}")
             return 
