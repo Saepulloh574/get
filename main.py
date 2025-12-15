@@ -13,7 +13,7 @@ API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 CACHE_FILE = "cache.json"
 
 # --- NEW CONFIG ---
-ADMIN_ID = 123456789  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
+ADMIN_ID = 7184123643  # GANTI DENGAN ID TELEGRAM ADMIN SEBENARNYA
 INLINE_RANGE_FILE = "inline.json"
 
 # =======================
