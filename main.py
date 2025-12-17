@@ -297,17 +297,31 @@ async def telegram_loop(page):
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
 
-                if "new_chat_members" in msg and (chat_id == GROUP_ID_1 or chat_id == GROUP_ID_2):
+                # --- START MODIFIKASI WELCOME MESSAGE ---
+                if "new_chat_members" in msg and chat_id == GROUP_ID_2: # HANYA GROUP_ID_2
                     for member in msg["new_chat_members"]:
                         if member["is_bot"]: continue
+                        
                         member_first_name = member.get("first_name", "New User")
                         member_mention = f"<a href='tg://user?id={member['id']}'>{member_first_name}</a>"
+                        
+                        # FORMAT PESAN BARU
                         welcome_message = (
-                            f"HEYY {member_mention} WELLCOME!!,\n"
-                            f"Ready to receive SMS? Get number at here {BOT_USERNAME_LINK}"
+                            f"🥳HI!! {member_mention} WELCOME TO GRUP\n"
+                            "READY TO RECEIVE SMS⁉️\n"
+                            "📞GET NUMBER IN BOT⤵️⤵️"
                         )
-                        tg_send(chat_id, welcome_message)
+                        
+                        # INLINE KEYBOARD DENGAN BOT_USERNAME_LINK
+                        inline_kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 GET NUMBER", "url": BOT_USERNAME_LINK}]
+                            ]
+                        }
+                        
+                        tg_send(chat_id, welcome_message, reply_markup=inline_kb)
                     continue 
+                # --- END MODIFIKASI WELCOME MESSAGE ---
 
                 if user_id == ADMIN_ID:
                     if text.startswith("/add"):
