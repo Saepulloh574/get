@@ -207,7 +207,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             
             await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
             await page.fill('input[name="numberrange"]', prefix)
-            await asyncio.sleep(0.1) 
+            await asyncio.sleep(0.5) 
             await page.click("#getNumberBtn")
 
             await asyncio.sleep(2) 
@@ -223,7 +223,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 number, country = await get_number_and_country(page)
             
             if not number:
-                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET NUMBER ULANG")
+                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN KLIK /start - GET NUMBER ULANG")
                 return
 
             save_cache({"number": number, "country": country})
@@ -236,7 +236,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 f"{emoji} COUNTRY : {country}\n"
                 f"🏷️ Range   : <code>{prefix}</code>\n\n"
                 "<b>🤖 Nomor telah dimasukkan ke daftar tunggu otomatis.</b>\n"
-                "<b>OTP akan dikirimkan ke chat ini secara instan Atau Check OTP grup.</b>"
+                "<b>OTP akan dikirimkan ke chat ini Atau Check OTP grup.</b>"
             )
 
             inline_kb = {
