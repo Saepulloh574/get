@@ -210,10 +210,10 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             await asyncio.sleep(0.1) 
             await page.click("#getNumberBtn")
 
-            await asyncio.sleep(1.5) 
+            await asyncio.sleep(2) 
             await page.reload()
             await page.wait_for_load_state("load") 
-            await asyncio.sleep(1.8) 
+            await asyncio.sleep(2) 
 
             number, country = await get_number_and_country(page)
             
