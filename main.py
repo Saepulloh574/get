@@ -9,6 +9,10 @@ import subprocess
 import sys 
 import time
 
+# --- MODIFIKASI: ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
+playwright_lock = asyncio.Lock()
+# ---------------------------------------------------------
+
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
@@ -176,69 +180,82 @@ async def get_number_and_country(page):
     return None, None
 
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
-    try:
-        if message_id_to_edit:
-            msg_id = message_id_to_edit
-            tg_edit(user_id, msg_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
+    
+    msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
+
+    # --- START LOCK MODIFICATION (Feedback Antrian) ---
+    if playwright_lock.locked(): 
+        if msg_id:
+            tg_edit(user_id, msg_id, f"⏳ Permintaan Anda masuk antrian. Mohon tunggu.\nRange: <code>{prefix}</code>")
         else:
-            msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
+            msg_id = tg_send(user_id, f"⏳ Permintaan Anda masuk antrian. Mohon tunggu.\nRange: <code>{prefix}</code>")
             if not msg_id: return
             
-        await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
-        await page.fill('input[name="numberrange"]', prefix)
-        await asyncio.sleep(0.1) 
-        await page.click("#getNumberBtn")
-
-        await asyncio.sleep(1.5) 
-        await page.reload()
-        await page.wait_for_load_state("load") 
-        await asyncio.sleep(1.8) 
-
-        number, country = await get_number_and_country(page)
+    # Menggunakan Lock untuk memastikan hanya satu task yang bisa masuk (Antrian Utama)
+    async with playwright_lock: 
         
-        if not number:
-            tg_edit(user_id, msg_id, f"⏳ Nomor belum muncul, mencoba lagi dalam 3 detik...\nRange: <code>{prefix}</code>")
-            await asyncio.sleep(3) 
+        try:
+            # Pengecekan ulang msg_id setelah mendapatkan Lock
+            if not msg_id:
+                 msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
+                 if not msg_id: return
+                 
+            # Update status ke 'Sedang Diproses' setelah mendapatkan Lock
+            tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengambil Number...\nRange: <code>{prefix}</code>")
+
+            # --- Bagian Interaksi Playwright (DIJAMIN SEQUENTIAL) ---
+            
+            await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
+            await page.fill('input[name="numberrange"]', prefix)
+            await asyncio.sleep(0.1) 
+            await page.click("#getNumberBtn")
+
+            await asyncio.sleep(1.5) 
+            await page.reload()
+            await page.wait_for_load_state("load") 
+            await asyncio.sleep(1.8) 
+
             number, country = await get_number_and_country(page)
-        
-        if not number:
-            tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET NUMBER ULANG")
-            if user_id in pending_message and pending_message[user_id] == msg_id:
-                del pending_message[user_id]
-            return
+            
+            if not number:
+                tg_edit(user_id, msg_id, f"⏳ Nomor belum muncul, mencoba lagi dalam 3 detik...\nRange: <code>{prefix}</code>")
+                await asyncio.sleep(3) 
+                number, country = await get_number_and_country(page)
+            
+            if not number:
+                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN GET NUMBER ULANG")
+                return
 
-        save_cache({"number": number, "country": country})
-        add_to_wait_list(number, user_id) 
-        
-        emoji = COUNTRY_EMOJI.get(country, "🗺️")
-        msg = (
-            "✅ The number is ready\n\n"
-            f"📞 Number  : <code>{number}</code>\n"
-            f"{emoji} COUNTRY : {country}\n"
-            f"🏷️ Range   : <code>{prefix}</code>\n\n"
-            "<b>🤖 Nomor telah dimasukkan ke daftar tunggu otomatis.</b>\n"
-            "<b>OTP akan dikirimkan ke chat ini secara instan jika sudah tersedia.</b>"
-        )
+            save_cache({"number": number, "country": country})
+            add_to_wait_list(number, user_id) 
+            
+            emoji = COUNTRY_EMOJI.get(country, "🗺️")
+            msg = (
+                "✅ The number is ready\n\n"
+                f"📞 Number  : <code>{number}</code>\n"
+                f"{emoji} COUNTRY : {country}\n"
+                f"🏷️ Range   : <code>{prefix}</code>\n\n"
+                "<b>🤖 Nomor telah dimasukkan ke daftar tunggu otomatis.</b>\n"
+                "<b>OTP akan dikirimkan ke chat ini secara instan Atau Check OTP grup.</b>"
+            )
 
-        inline_kb = {
-            "inline_keyboard": [
-                [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
-            ]
-        }
+            inline_kb = {
+                "inline_keyboard": [
+                    [{"text": "📲 Get Number", "callback_data": "getnum"}],
+                    [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
+                ]
+            }
 
-        tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
-        
-        if user_id in pending_message and pending_message[user_id] == msg_id:
-            del pending_message[user_id]
+            tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
+            
+        except Exception as e:
+            print(f"[ERROR] Terjadi kesalahan pada Playwright/Web: {e}")
+            if msg_id:
+                tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
+                
+    # Lock otomatis dilepas saat keluar dari 'async with'
+    # --- END LOCK MODIFICATION ---
 
-    except Exception as e:
-        print(f"[ERROR] Terjadi kesalahan pada Playwright/Web: {e}")
-        error_msg_id = message_id_to_edit if message_id_to_edit else pending_message.get(user_id)
-        if error_msg_id:
-            tg_edit(user_id, error_msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
-            if user_id in pending_message:
-                del pending_message[user_id]
 
 async def telegram_loop(page):
     offset = 0
@@ -334,12 +351,17 @@ async def telegram_loop(page):
                 if user_id in waiting_range:
                     waiting_range.remove(user_id)
                     prefix = text.strip()
-                    msg_id_to_edit = pending_message.pop(user_id, None) 
-                    
+                    msg_id_to_edit = pending_message.get(user_id) # Gunakan get untuk mencegah KeyError jika sudah di pop di callback
+
                     if is_valid_phone_number(prefix):
+                        # Kirim pesan peringatan, jangan lanjutkan proses web
                         tg_send(user_id, "⚠️ Input tidak valid sebagai range. Silakan kirim prefix range, contoh: <code>9377009XXX</code>.")
+                        if user_id in pending_message:
+                            del pending_message[user_id] # Hapus pesan pending agar tidak mengganggu callback berikutnya
                         continue
                         
+                    # Lanjutkan ke proses web
+                    # pop pending_message dilakukan di awal process_user_input
                     await process_user_input(page, user_id, prefix, msg_id_to_edit)
                     continue
 
@@ -393,6 +415,7 @@ async def telegram_loop(page):
                         
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
                         
+                        # Simpan ID pesan agar bisa diedit nanti
                         pending_message[user_id] = menu_msg_id
                     else:
                         waiting_range.add(user_id)
@@ -407,6 +430,7 @@ async def telegram_loop(page):
                         
                     prefix = data_cb.split(":")[1]
                     
+                    # Update pesan ke status proses/antri
                     tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
                     
                     await process_user_input(page, user_id, prefix, menu_msg_id)
@@ -444,6 +468,7 @@ async def main():
     try:
         async with async_playwright() as p:
             try:
+                # Menghubungkan ke Chrome yang sudah berjalan (dengan flag --remote-debugging-port=9222)
                 browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             except Exception as e:
                 print(f"[ERROR] Gagal koneksi ke Chrome CDP: {e}")
