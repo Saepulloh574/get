@@ -218,9 +218,32 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             number, country = await get_number_and_country(page)
             
             if not number:
-                tg_edit(user_id, msg_id, f"⏳ Nomor belum muncul, mencoba lagi dalam 3 detik...\nRange: <code>{prefix}</code>")
-                await asyncio.sleep(3) 
+                
+                # --- START MODIFIKASI LOADING DINAMIS ---
+                
+                delay_duration = 4.0 
+                update_interval = 0.25 
+                
+                loading_statuses = [
+                    "⏳ Nomor belum muncul mencoba lagi...",
+                    "⏳ Nomor belum muncul mencoba lagi.  ",
+                    "⏳ Nomor belum muncul mencoba lagi.. ",
+                    "⏳ Nomor belum muncul mencoba lagi...",
+                ]
+                
+                start_time = time.time()
+                
+                while (time.time() - start_time) < delay_duration:
+                    index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
+                    current_status = loading_statuses[index]
+                    
+                    tg_edit(user_id, msg_id, f"{current_status}\nRange: <code>{prefix}</code>")
+                    
+                    await asyncio.sleep(update_interval)
+
+                # Coba ambil nomor lagi setelah loop loading selesai
                 number, country = await get_number_and_country(page)
+                # --- END MODIFIKASI LOADING DINAMIS ---
             
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN KLIK /start - GET NUMBER ULANG")
@@ -351,17 +374,14 @@ async def telegram_loop(page):
                 if user_id in waiting_range:
                     waiting_range.remove(user_id)
                     prefix = text.strip()
-                    msg_id_to_edit = pending_message.get(user_id) # Gunakan get untuk mencegah KeyError jika sudah di pop di callback
+                    msg_id_to_edit = pending_message.get(user_id) 
 
                     if is_valid_phone_number(prefix):
-                        # Kirim pesan peringatan, jangan lanjutkan proses web
                         tg_send(user_id, "⚠️ Input tidak valid sebagai range. Silakan kirim prefix range, contoh: <code>9377009XXX</code>.")
                         if user_id in pending_message:
-                            del pending_message[user_id] # Hapus pesan pending agar tidak mengganggu callback berikutnya
+                            del pending_message[user_id] 
                         continue
                         
-                    # Lanjutkan ke proses web
-                    # pop pending_message dilakukan di awal process_user_input
                     await process_user_input(page, user_id, prefix, msg_id_to_edit)
                     continue
 
@@ -415,7 +435,6 @@ async def telegram_loop(page):
                         
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
                         
-                        # Simpan ID pesan agar bisa diedit nanti
                         pending_message[user_id] = menu_msg_id
                     else:
                         waiting_range.add(user_id)
@@ -430,7 +449,6 @@ async def telegram_loop(page):
                         
                     prefix = data_cb.split(":")[1]
                     
-                    # Update pesan ke status proses/antri
                     tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
                     
                     await process_user_input(page, user_id, prefix, menu_msg_id)
