@@ -1,64 +1,83 @@
-import json
 import os
+import json
 import time
 import requests
+from datetime import datetime
 
+# ================= CONFIG =================
 BOT_TOKEN = "7386979557:AAEXKl33CCcaQgKes3acF9HBSZGnwRWissk"
-OTP_FILE = "otp.json"
-SMC_FILE = "../ivams/smc.json"
+OTP_FILE = "otp.json"           # dari get.py
+SMC_FILE = "C:/Users/Administrator/ivams/smc.json"  # sesuaikan path
+CHECK_INTERVAL = 5               # detik
 
-def send(user_id, text):
-    requests.post(
-        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-        data={
-            "chat_id": user_id,
-            "text": text,
-            "parse_mode": "HTML"
-        },
-        timeout=10
-    )
+# ================= HELPERS =================
+def load_json(path):
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                return json.load(f)
+        except:
+            return []
+    return []
 
-print("OTP WATCHER RUNNING")
+def save_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
 
-while True:
+def send_telegram(user_id, text):
+    url=f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload={"chat_id": user_id, "text": text, "parse_mode":"HTML"}
     try:
-        if not os.path.exists(OTP_FILE) or not os.path.exists(SMC_FILE):
-            time.sleep(2)
-            continue
+        r=requests.post(url,data=payload,timeout=10)
+        return r.ok
+    except:
+        return False
 
-        otp_wait = json.load(open(OTP_FILE))
-        smc = json.load(open(SMC_FILE))
+def format_sms_message(entry):
+    return f"""SMS received 🥳
 
-        new_otp = []
-        new_smc = []
+Range: {entry.get('range','N/A')}
+Number: <code>{entry.get('number','N/A')}</code>
+OTP: <code>{entry.get('otp','N/A')}</code>
 
-        for s in smc:
-            sent = False
-            for o in otp_wait:
-                if s["number"] == o["number"]:
-                    msg = f"""🥳 <b>SMS received!</b>
+Silahkan gunakan!"""
 
-🌍 Range: <b>{s['range']}</b>
-📱 Number: <code>{s['number']}</code>
-🔢 OTP: <code>{s['otp']}</code>
+# ================= MAIN LOOP =================
+def main():
+    print("OTP watcher running...")
+    while True:
+        try:
+            otp_users = load_json(OTP_FILE)
+            if not otp_users:
+                time.sleep(CHECK_INTERVAL)
+                continue
 
-Silahkan gunakan
-"""
-                    send(o["user_id"], msg)
-                    sent = True
-                    break
+            smc_data = load_json(SMC_FILE)
+            if not smc_data:
+                time.sleep(CHECK_INTERVAL)
+                continue
 
-            if not sent:
-                new_smc.append(s)
+            new_smc=[]
+            for entry in smc_data:
+                matched_users=[u for u in otp_users if u["number"]==entry.get("number")]
+                if matched_users:
+                    for u in matched_users:
+                        msg=format_sms_message(entry)
+                        sent=send_telegram(u["id"], msg)
+                        if sent:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] OTP sent to {u['id']} - {entry['number']}")
+                        else:
+                            print(f"[{datetime.now().strftime('%H:%M:%S')}] Failed send OTP to {u['id']}")
+                    # jangan masukkan ke new_smc → otomatis dihapus
+                else:
+                    new_smc.append(entry)
+            if len(new_smc)!=len(smc_data):
+                save_json(SMC_FILE,new_smc)
+            time.sleep(CHECK_INTERVAL)
 
-        for o in otp_wait:
-            if not any(o["number"] == s["number"] for s in smc):
-                new_otp.append(o)
+        except Exception as e:
+            print(f"Error: {e}")
+            time.sleep(CHECK_INTERVAL)
 
-        json.dump(new_otp, open(OTP_FILE,"w"), indent=2)
-        json.dump(new_smc, open(SMC_FILE,"w"), indent=2)
-
-    except Exception as e:
-        print("OTP ERROR:", e)
-
-    time.sleep(2)
+if __name__=="__main__":
+    main()
