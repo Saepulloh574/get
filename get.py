@@ -12,7 +12,7 @@ from telegram.ext import (
 )
 
 # ================= CONFIG =================
-TOKEN = "ISI_TOKEN_BOT_LO"
+TOKEN = "7386979557:AAEXKl33CCcaQgKes3acF9HBSZGnwRWissk"
 ADMIN_ID = 7184123643
 OTP_FILE = "otp.json"
 
