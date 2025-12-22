@@ -3,12 +3,12 @@ import json
 import os
 import requests
 import re
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Error as PlaywrightError
 from dotenv import load_dotenv
 import subprocess
 import sys
 import time
-from copy import deepcopy # Digunakan untuk memecahkan masalah copy list/dict
+from copy import deepcopy
 
 # --- MODIFIKASI: ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
 playwright_lock = asyncio.Lock()
@@ -32,9 +32,9 @@ INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
 COUNTRY_EMOJI_FILE = "country.json"
-BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
-GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
-GROUP_LINK_2 = "https://t.me/zura14g" 
+BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" # Ganti ini
+GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" # Ganti ini
+GROUP_LINK_2 = "https://t.me/zura14g" # Ganti ini
 
 verified_users = set()
 waiting_range = set()
@@ -50,6 +50,7 @@ def load_country_emojis():
     """Memuat data emoji negara dari country.json dengan encoding UTF-8."""
     if os.path.exists(COUNTRY_EMOJI_FILE):
         try:
+            # PENTING: Menggunakan encoding='utf-8' eksplisit
             with open(COUNTRY_EMOJI_FILE, "r", encoding='utf-8') as f:
                 return json.load(f)
         except json.JSONDecodeError:
@@ -59,6 +60,8 @@ def load_country_emojis():
             print(f"[ERROR] Gagal membaca {COUNTRY_EMOJI_FILE}: {e}")
             return {}
     return {}
+
+# --- FUNGSI UTILITY (load/save cache, wait_list, range) (Tidak Berubah) ---
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -115,7 +118,6 @@ def generate_admin_range_keyboard(ranges, mode):
     keyboard = []
     current_row = []
     
-    # Menentukan callback prefix dan tombol kembali
     if mode == "edit":
         prefix_cb = "edit_select:"
         back_cb = "manage_range"
@@ -130,7 +132,7 @@ def generate_admin_range_keyboard(ranges, mode):
         callback_data = f"{prefix_cb}{item['range']}"
         current_row.append({"text": text, "callback_data": callback_data})
 
-        if len(current_row) == 1: # Satu range per baris agar mudah diklik
+        if len(current_row) == 1:
             keyboard.append(current_row)
             current_row = []
 
@@ -195,6 +197,8 @@ def tg_edit(chat_id, message_id, text, reply_markup=None):
 
 def tg_get_updates(offset):
     try:
+        # Menghilangkan parameter timeout di sini karena sudah ada di asyncio.sleep, 
+        # namun jika koneksi lambat, mungkin perlu dipertimbangkan
         return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 1}).json()
     except Exception as e:
         print(f"[ERROR GET UPDATES] {e}")
@@ -215,25 +219,34 @@ def is_user_in_both_groups(user_id):
     is_member_2 = is_user_in_group(user_id, GROUP_ID_2)
     return is_member_1 and is_member_2
 
+# --- FUNGSI PLAYWRIGHT ---
+
 async def get_number_and_country(page):
-    rows = await page.query_selector_all("tbody tr")
-    for row in rows:
-        phone_el = await row.query_selector(".phone-number")
-        if not phone_el:
-            continue
-        number = (await phone_el.inner_text()).strip()
-        
-        if is_in_cache(number):
-            continue
-        
-        if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
-            continue
+    try:
+        rows = await page.query_selector_all("tbody tr")
+        for row in rows:
+            phone_el = await row.query_selector(".phone-number")
+            if not phone_el:
+                continue
+            number = (await phone_el.inner_text()).strip()
+            
+            if is_in_cache(number):
+                continue
+            
+            if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
+                continue
 
-        country_el = await row.query_selector(".badge.bg-primary")
-        country = (await country_el.inner_text()).strip().upper() if country_el else "-"
+            country_el = await row.query_selector(".badge.bg-primary")
+            country = (await country_el.inner_text()).strip().upper() if country_el else "-"
 
-        if number and len(number) > 5:
-            return number, country
+            if number and len(number) > 5:
+                return number, country
+    except PlaywrightError as e:
+        print(f"[PLAYWRIGHT ERROR] Gagal mengambil nomor/negara: {e}")
+        return None, None
+    except Exception as e:
+        print(f"[ERROR] Gagal mengambil nomor/negara (non-playwright): {e}")
+        return None, None
 
     return None, None
 
@@ -259,47 +272,50 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
             tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengambil Number...\nRange: <code>{prefix}</code>")
 
-            # --- Interaksi Playwright ---
-            await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
-            await page.fill('input[name="numberrange"]', prefix)
-            await asyncio.sleep(0.5)
-
-            await page.click("#getNumberBtn", force=True)
-
+            # --- Interaksi Playwright (DIPERKUAT DENGAN TRY/EXCEPT) ---
             try:
-                await page.wait_for_selector("tbody tr", timeout=15000)
-            except Exception:
-                print(f"[INFO] Timeout menunggu hasil AJAX setelah klik getNumberBtn untuk range {prefix}. Melanjutkan...")
-                pass
-            
-            await asyncio.sleep(2) 
+                await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
+                await page.fill('input[name="numberrange"]', prefix)
+                await asyncio.sleep(0.5)
 
-            number, country = await get_number_and_country(page)
+                await page.click("#getNumberBtn", force=True)
 
-            if not number:
-                # --- LOADING DINAMIS ---
-                delay_duration = 5.0
-                update_interval = 0.5
+                try:
+                    await page.wait_for_selector("tbody tr", timeout=15000)
+                except PlaywrightError:
+                    print(f"[INFO] Timeout menunggu hasil AJAX setelah klik getNumberBtn untuk range {prefix}. Melanjutkan...")
+                    pass
                 
-                loading_statuses = [
-                    "⏳ Nomor belum muncul mencoba lagi.",
-                    "⏳ Nomor belum muncul mencoba lagi..",
-                    "⏳ Nomor belum muncul mencoba lagi...",
-                    "⏳ Nomor belum muncul mencoba lagi....",
-                ]
-
-                start_time = time.time()
-                while (time.time() - start_time) < delay_duration:
-                    index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
-                    current_status = loading_statuses[index]
-                    
-                    tg_edit(user_id, msg_id, f"{current_status}\nRange: <code>{prefix}</code>")
-                    
-                    await asyncio.sleep(update_interval)
+                await asyncio.sleep(2) 
 
                 number, country = await get_number_and_country(page)
-                # --- END LOADING DINAMIS ---
 
+                if not number:
+                    # --- LOADING DINAMIS ---
+                    delay_duration = 5.0
+                    update_interval = 0.5
+                    
+                    loading_statuses = ["⏳ Mencoba lagi.", "⏳ Mencoba lagi..", "⏳ Mencoba lagi...", "⏳ Mencoba lagi...."]
+
+                    start_time = time.time()
+                    while (time.time() - start_time) < delay_duration:
+                        index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
+                        current_status = loading_statuses[index]
+                        
+                        tg_edit(user_id, msg_id, f"{current_status}\nRange: <code>{prefix}</code>")
+                        
+                        await asyncio.sleep(update_interval)
+
+                    number, country = await get_number_and_country(page)
+                    # --- END LOADING DINAMIS ---
+
+            except PlaywrightError as pe:
+                # Menangkap error Playwright spesifik
+                print(f"[CRITICAL PLAYWRIGHT ERROR] Gagal interaksi web: {pe}")
+                tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan interaksi web (Playwright): {type(pe).__name__}. Cek log bot.")
+                return
+
+            # --- Hasil Akhir ---
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN KLIK /start - GET NUMBER ULANG")
                 return
@@ -327,251 +343,257 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
 
         except Exception as e:
-            print(f"[ERROR] Terjadi kesalahan pada Playwright/Web: {type(e).__name__} - {e}")
+            print(f"[ERROR] Terjadi kesalahan umum (non-Playwright): {type(e).__name__} - {e}")
             if msg_id:
-                tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
+                tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan umum saat proses. Cek log bot: {type(e).__name__}")
+    # --- END Lock Utama Playwright ---
+
+# --- FUNGSI TELEGRAM LOOP (DIPERKUAT) ---
 
 async def telegram_loop(page):
     offset = 0
     while True:
-        data = tg_get_updates(offset)
-        for upd in data.get("result", []):
-            offset = upd["update_id"] + 1
+        try:
+            data = tg_get_updates(offset)
+            
+            for upd in data.get("result", []):
+                offset = upd["update_id"] + 1
 
-            if "message" in upd:
-                msg = upd["message"]
-                chat_id = msg["chat"]["id"]
-                user_id = msg["from"]["id"]
+                # --- LOGIKA PEMROSESAN PESAN ---
+                if "message" in upd:
+                    msg = upd["message"]
+                    chat_id = msg["chat"]["id"]
+                    user_id = msg["from"]["id"]
 
-                first_name = msg["from"].get("first_name", "User")
-                mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
-                text = msg.get("text", "")
+                    first_name = msg["from"].get("first_name", "User")
+                    mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
+                    text = msg.get("text", "")
 
-                # --- WELCOME MESSAGE ---
-                if "new_chat_members" in msg and chat_id == GROUP_ID_2:
-                    # ... (logika welcome message tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    continue
-
-                # --- ADMIN /add COMMAND (Menu Utama) ---
-                if user_id == ADMIN_ID:
-                    if text == "/add":
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": "✍️ Edit Range", "callback_data": "edit_menu"},
-                                 {"text": "🗑️ Hapus Range", "callback_data": "delete_menu"}],
-                                [{"text": "➕ Tambah Range Baru", "callback_data": "add_range"}],
-                            ]
-                        }
-                        tg_send(user_id, "⚙️ **Manajemen Range Inline**\n\nSilakan pilih opsi:", kb)
+                    # --- WELCOME MESSAGE ---
+                    if "new_chat_members" in msg and chat_id == GROUP_ID_2:
+                        for member in msg["new_chat_members"]:
+                            if member["is_bot"]: continue
+                            member_first_name = member.get("first_name", "New User")
+                            member_mention = f"<a href='tg://user?id={member['id']}'>{member_first_name}</a>"
+                            welcome_message = (
+                                f"🥳HI!! {member_mention} WELCOME TO GRUP\n"
+                                "READY TO RECEIVE SMS⁉️\n"
+                                "📞GET NUMBER IN BOT⤵️⤵️"
+                            )
+                            inline_kb = {"inline_keyboard": [[{"text": "📲 GET NUMBER", "url": BOT_USERNAME_LINK}]]}
+                            tg_send(chat_id, welcome_message, reply_markup=inline_kb)
                         continue
 
-                # --- ADMIN INPUT PROCESSING (Tambah/Edit) ---
-                if user_id in waiting_admin_input:
-                    admin_state = waiting_admin_input.pop(user_id)
-                    mode = admin_state["mode"]
-                    prompt_msg_id = pending_message.pop(user_id, None)
-                    current_ranges = load_inline_ranges()
-                    global GLOBAL_COUNTRY_EMOJI
-                    GLOBAL_COUNTRY_EMOJI = load_country_emojis()
-                    
-                    if mode == "add":
-                        new_ranges = []
-                        for line in text.strip().split('\n'):
-                            if ' > ' in line:
-                                parts = line.split(' > ', 1)
-                                range_prefix = parts[0].strip()
-                                country_name = parts[1].strip().upper()
-                                
-                                # Cek duplikasi sebelum menambah
-                                if any(r['range'] == range_prefix for r in current_ranges):
-                                    if prompt_msg_id:
-                                        tg_edit(user_id, prompt_msg_id, f"❌ Range <code>{range_prefix}</code> sudah ada. Batalkan penambahan range.")
-                                    continue
-                                
-                                emoji = GLOBAL_COUNTRY_EMOJI.get(country_name, "🗺️")
-                                new_ranges.append({
-                                    "range": range_prefix, "country": country_name, "emoji": emoji
-                                })
-                        
-                        if new_ranges:
-                            updated_ranges = current_ranges + new_ranges
-                            save_inline_ranges(updated_ranges)
-                            if prompt_msg_id:
-                                tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menambahkan {len(new_ranges)} range baru. Total range: {len(updated_ranges)}.")
-                        else:
-                            if prompt_msg_id:
-                                tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
-                                
-                    elif mode == "edit":
-                        old_prefix = admin_state["prefix_lama"]
-                        new_prefix = text.strip()
-
-                        # Cek apakah format input baru sesuai (tidak boleh mengandung ' > ')
-                        if ' > ' in new_prefix or not new_prefix:
-                            tg_edit(user_id, prompt_msg_id, "❌ Input range baru tidak valid. Range harus berupa prefix tunggal, cth: <code>97798XXXX</code>")
+                    # --- ADMIN /add COMMAND (Menu Utama) ---
+                    if user_id == ADMIN_ID:
+                        if text == "/add":
+                            kb = {
+                                "inline_keyboard": [
+                                    [{"text": "✍️ Edit Range", "callback_data": "edit_menu"},
+                                    {"text": "🗑️ Hapus Range", "callback_data": "delete_menu"}],
+                                    [{"text": "➕ Tambah Range Baru", "callback_data": "add_range"}],
+                                ]
+                            }
+                            tg_send(user_id, "⚙️ **Manajemen Range Inline**\n\nSilakan pilih opsi:", kb)
                             continue
+
+                    # --- ADMIN INPUT PROCESSING (Tambah/Edit) ---
+                    if user_id in waiting_admin_input:
+                        admin_state = waiting_admin_input.pop(user_id)
+                        mode = admin_state["mode"]
+                        prompt_msg_id = pending_message.pop(user_id, None)
+                        current_ranges = load_inline_ranges()
+                        global GLOBAL_COUNTRY_EMOJI
+                        GLOBAL_COUNTRY_EMOJI = load_country_emojis()
                         
-                        found = False
-                        for r in current_ranges:
-                            if r['range'] == old_prefix:
-                                r['range'] = new_prefix
-                                found = True
-                                break
-                        
-                        if found:
-                            save_inline_ranges(current_ranges)
-                            tg_edit(user_id, prompt_msg_id, f"✅ Range <code>{old_prefix}</code> berhasil diperbarui menjadi <code>{new_prefix}</code>.")
-                        else:
-                            tg_edit(user_id, prompt_msg_id, f"❌ Range lama <code>{old_prefix}</code> tidak ditemukan saat mencoba pembaruan.")
-
-                    continue
-
-                # --- /start COMMAND ---
-                if text == "/start":
-                    # ... (logika /start tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    continue
-
-                # --- RANGE INPUT (Manual User) ---
-                if user_id in waiting_range:
-                    # ... (logika input range user tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    await process_user_input(page, user_id, prefix, msg_id_to_edit)
-                    continue
-
-            if "callback_query" in upd:
-                cq = upd["callback_query"]
-                user_id = cq["from"]["id"]
-                data_cb = cq["data"]
-                chat_id = cq["message"]["chat"]["id"]
-                menu_msg_id = cq["message"]["message_id"]
-
-                # Cek izin admin
-                if user_id == ADMIN_ID:
-                    
-                    # 1. Menu Utama Manajemen Range
-                    if data_cb == "manage_range":
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": "✍️ Edit Range", "callback_data": "edit_menu"},
-                                 {"text": "🗑️ Hapus Range", "callback_data": "delete_menu"}],
-                                [{"text": "➕ Tambah Range Baru", "callback_data": "add_range"}],
-                            ]
-                        }
-                        tg_edit(chat_id, menu_msg_id, "⚙️ **Manajemen Range Inline**\n\nSilakan pilih opsi:", kb)
-                        return
-
-                    # 2. Mode Tambah Range
-                    if data_cb == "add_range":
-                        waiting_admin_input[user_id] = {"mode": "add", "prefix_lama": None}
-                        prompt_msg_text = "Silahkan kirim daftar range baru (satu atau banyak) dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>"
-                        tg_edit(chat_id, menu_msg_id, prompt_msg_text)
-                        pending_message[user_id] = menu_msg_id # Simpan ID pesan untuk diedit
-                        return
-
-                    # 3. Menu Edit Range (Pilih Range)
-                    if data_cb == "edit_menu":
-                        ranges = load_inline_ranges()
-                        if not ranges:
-                            tg_edit(chat_id, menu_msg_id, "⚠️ Tidak ada range yang tersedia untuk diedit.", reply_markup={"inline_keyboard": [[{"text": "« Kembali", "callback_data": "manage_range"}]]})
-                            return
-                        
-                        kb = generate_admin_range_keyboard(ranges, "edit")
-                        tg_edit(chat_id, menu_msg_id, "✍️ **Edit Range**\n\nSilahkan klik salah satu range untuk di edit:", kb)
-                        return
-
-                    # 4. Memilih Range untuk Diedit (edit_select:prefix)
-                    if data_cb.startswith("edit_select:"):
-                        old_prefix = data_cb.split(":")[1]
-                        
-                        # Temukan detail negara dari prefix lama
-                        ranges = load_inline_ranges()
-                        selected_range = next((r for r in ranges if r['range'] == old_prefix), None)
-                        
-                        if selected_range:
-                            waiting_admin_input[user_id] = {"mode": "edit", "prefix_lama": old_prefix}
+                        if mode == "add":
+                            new_ranges = []
+                            for line in text.strip().split('\n'):
+                                if ' > ' in line:
+                                    parts = line.split(' > ', 1)
+                                    range_prefix = parts[0].strip()
+                                    country_name = parts[1].strip().upper()
+                                    
+                                    if any(r['range'] == range_prefix for r in current_ranges):
+                                        if prompt_msg_id:
+                                            tg_send(user_id, f"❌ Range <code>{range_prefix}</code> sudah ada. Dilewati.") # Kirim pesan baru daripada mengedit
+                                        continue
+                                    
+                                    emoji = GLOBAL_COUNTRY_EMOJI.get(country_name, "🗺️")
+                                    new_ranges.append({"range": range_prefix, "country": country_name, "emoji": emoji})
                             
-                            prompt_text = (
-                                f"📝 **Edit Range**\n\n"
-                                f"Anda memilih **{selected_range['country']}** dengan range lama: <code>{old_prefix}</code>.\n\n"
-                                f"Silahkan kirim range terbaru untuk negara ini (Contoh: <code>1234577XXX</code>):"
-                            )
-                            tg_edit(chat_id, menu_msg_id, prompt_text)
-                            pending_message[user_id] = menu_msg_id
-                        else:
-                            tg_edit(chat_id, menu_msg_id, "❌ Range tidak ditemukan. Silakan coba lagi.", reply_markup={"inline_keyboard": [[{"text": "« Kembali", "callback_data": "edit_menu"}]]})
-                        return
+                            if new_ranges:
+                                updated_ranges = current_ranges + new_ranges
+                                save_inline_ranges(updated_ranges)
+                                if prompt_msg_id:
+                                    tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menambahkan {len(new_ranges)} range baru. Total range: {len(updated_ranges)}.")
+                            else:
+                                if prompt_msg_id:
+                                    tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
+                                    
+                        elif mode == "edit":
+                            old_prefix = admin_state["prefix_lama"]
+                            new_prefix = text.strip()
 
-                    # 5. Menu Hapus Range (Pilih Range)
-                    if data_cb == "delete_menu":
-                        ranges = load_inline_ranges()
-                        if not ranges:
-                            tg_edit(chat_id, menu_msg_id, "⚠️ Tidak ada range yang tersedia untuk dihapus.", reply_markup={"inline_keyboard": [[{"text": "« Kembali", "callback_data": "manage_range"}]]})
+                            if ' > ' in new_prefix or not new_prefix:
+                                tg_edit(user_id, prompt_msg_id, "❌ Input range baru tidak valid. Range harus berupa prefix tunggal, cth: <code>97798XXXX</code>")
+                                continue
+                            
+                            found = False
+                            for r in current_ranges:
+                                if r['range'] == old_prefix:
+                                    r['range'] = new_prefix
+                                    found = True
+                                    break
+                            
+                            if found:
+                                save_inline_ranges(current_ranges)
+                                tg_edit(user_id, prompt_msg_id, f"✅ Range <code>{old_prefix}</code> berhasil diperbarui menjadi <code>{new_prefix}</code>.")
+                            else:
+                                tg_edit(user_id, prompt_msg_id, f"❌ Range lama <code>{old_prefix}</code> tidak ditemukan saat mencoba pembaruan.")
+
+                        continue
+
+                    # --- /start COMMAND ---
+                    if text == "/start":
+                        is_member = is_user_in_both_groups(user_id)
+                        if is_member:
+                            verified_users.add(user_id)
+                            kb = {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}], [{"text": "👨‍💼 Admin", "url": "https://t.me/"}],]}
+                            tg_send(user_id, f"✅ Verifikasi Berhasil, {mention}!\n\nGunakan tombol di bawah:", kb)
+                        else:
+                            kb = {"inline_keyboard": [[{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}], [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}], [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],]}
+                            tg_send(user_id, f"Halo {mention} 👋\nHarap gabung kedua grup di bawah untuk verifikasi:", kb)
+                        continue
+
+                    # --- RANGE INPUT (Manual User) ---
+                    if user_id in waiting_range:
+                        waiting_range.remove(user_id)
+                        prefix = text.strip()
+                        msg_id_to_edit = pending_message.get(user_id)
+
+                        if is_valid_phone_number(prefix):
+                            tg_send(user_id, "⚠️ Input tidak valid sebagai range. Silakan kirim prefix range, contoh: <code>9377009XXX</code>.")
+                            if user_id in pending_message: del pending_message[user_id]
+                            waiting_range.add(user_id) 
+                            continue
+
+                        await process_user_input(page, user_id, prefix, msg_id_to_edit)
+                        continue
+
+                # --- LOGIKA CALLBACK QUERY ---
+                if "callback_query" in upd:
+                    cq = upd["callback_query"]
+                    user_id = cq["from"]["id"]
+                    data_cb = cq["data"]
+                    chat_id = cq["message"]["chat"]["id"]
+                    menu_msg_id = cq["message"]["message_id"]
+
+                    # --- ADMIN LOGIC ---
+                    if user_id == ADMIN_ID:
+                        
+                        # 1. Menu Utama Manajemen Range
+                        if data_cb == "manage_range":
+                            kb = {"inline_keyboard": [[{"text": "✍️ Edit Range", "callback_data": "edit_menu"}, {"text": "🗑️ Hapus Range", "callback_data": "delete_menu"}], [{"text": "➕ Tambah Range Baru", "callback_data": "add_range"}],]}
+                            tg_edit(chat_id, menu_msg_id, "⚙️ **Manajemen Range Inline**\n\nSilakan pilih opsi:", kb)
+                            continue
+
+                        # 2. Mode Tambah Range
+                        if data_cb == "add_range":
+                            waiting_admin_input[user_id] = {"mode": "add", "prefix_lama": None}
+                            prompt_msg_text = "Silahkan kirim daftar range baru (satu atau banyak) dalam format:\n\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE\n97798XXXX > NEPAL</code>"
+                            tg_edit(chat_id, menu_msg_id, prompt_msg_text)
+                            pending_message[user_id] = menu_msg_id
+                            return
+
+                        # 3. Menu Edit Range
+                        if data_cb == "edit_menu":
+                            ranges = load_inline_ranges()
+                            if not ranges:
+                                tg_edit(chat_id, menu_msg_id, "⚠️ Tidak ada range yang tersedia untuk diedit.", reply_markup={"inline_keyboard": [[{"text": "« Kembali", "callback_data": "manage_range"}]]})
+                                return
+                            kb = generate_admin_range_keyboard(ranges, "edit")
+                            tg_edit(chat_id, menu_msg_id, "✍️ **Edit Range**\n\nSilahkan klik salah satu range untuk di edit:", kb)
+                            return
+
+                        # 4. Memilih Range untuk Diedit (edit_select:prefix)
+                        if data_cb.startswith("edit_select:"):
+                            old_prefix = data_cb.split(":")[1]
+                            ranges = load_inline_ranges()
+                            selected_range = next((r for r in ranges if r['range'] == old_prefix), None)
+                            
+                            if selected_range:
+                                waiting_admin_input[user_id] = {"mode": "edit", "prefix_lama": old_prefix}
+                                prompt_text = (f"📝 **Edit Range**\n\nAnda memilih **{selected_range['country']}** dengan range lama: <code>{old_prefix}</code>.\n\nSilahkan kirim range terbaru untuk negara ini (Contoh: <code>1234577XXX</code>):")
+                                tg_edit(chat_id, menu_msg_id, prompt_text)
+                                pending_message[user_id] = menu_msg_id
+                            else:
+                                tg_edit(chat_id, menu_msg_id, "❌ Range tidak ditemukan. Silakan coba lagi.", reply_markup={"inline_keyboard": [[{"text": "« Kembali", "callback_data": "edit_menu"}]]})
+                            return
+
+                        # 5. Menu Hapus Range
+                        if data_cb == "delete_menu":
+                            ranges = load_inline_ranges()
+                            if not ranges:
+                                tg_edit(chat_id, menu_msg_id, "⚠️ Tidak ada range yang tersedia untuk dihapus.", reply_markup={"inline_keyboard": [[{"text": "« Kembali", "callback_data": "manage_range"}]]})
+                                return
+                            kb = generate_admin_range_keyboard(ranges, "delete")
+                            tg_edit(chat_id, menu_msg_id, "🗑️ **Hapus Range**\n\nSilahkan klik salah satu range untuk di hapus:", kb)
+                            return
+
+                        # 6. Memilih Range untuk Dihapus (delete_select:prefix)
+                        if data_cb.startswith("delete_select:"):
+                            prefix_to_delete = data_cb.split(":")[1]
+                            ranges = load_inline_ranges()
+                            selected_range = next((r for r in ranges if r['range'] == prefix_to_delete), {"country": "N/A"})
+                            
+                            kb = {"inline_keyboard": [[{"text": f"✅ Konfirmasi Hapus {prefix_to_delete}", "callback_data": f"confirm_delete:{prefix_to_delete}"}], [{"text": "« Batalkan", "callback_data": "delete_menu"}]]}
+                            tg_edit(chat_id, menu_msg_id, f"⚠️ **Konfirmasi Penghapusan**\n\nApakah Anda yakin ingin menghapus range:\n**{selected_range['country']}** (<code>{prefix_to_delete}</code>)?", kb)
+                            return
+
+                        # 7. Konfirmasi Penghapusan (confirm_delete:prefix)
+                        if data_cb.startswith("confirm_delete:"):
+                            prefix_to_delete = data_cb.split(":")[1]
+                            ranges = load_inline_ranges()
+                            updated_ranges = [r for r in ranges if r['range'] != prefix_to_delete]
+                            
+                            if len(updated_ranges) < len(ranges):
+                                save_inline_ranges(updated_ranges)
+                                tg_edit(chat_id, menu_msg_id, f"✅ Range <code>{prefix_to_delete}</code> berhasil dihapus. Sisa {len(updated_ranges)} range.", reply_markup={"inline_keyboard": [[{"text": "« Kembali ke Menu Utama", "callback_data": "manage_range"}]]})
+                            else:
+                                tg_edit(chat_id, menu_msg_id, "❌ Gagal menghapus. Range tidak ditemukan.", reply_markup={"inline_keyboard": [[{"text": "« Kembali ke Menu Utama", "callback_data": "manage_range"}]]})
                             return
                         
-                        kb = generate_admin_range_keyboard(ranges, "delete")
-                        tg_edit(chat_id, menu_msg_id, "🗑️ **Hapus Range**\n\nSilahkan klik salah satu range untuk di hapus:", kb)
-                        return
+                    # --- CALLBACK NON-ADMIN LOGIC ---
+                    
+                    if data_cb == "verify":
+                        # ... (logika verify)
+                        continue
 
-                    # 6. Memilih Range untuk Dihapus (delete_select:prefix)
-                    if data_cb.startswith("delete_select:"):
-                        prefix_to_delete = data_cb.split(":")[1]
-                        
-                        # Tombol konfirmasi
-                        kb = {
-                            "inline_keyboard": [
-                                [{"text": f"✅ Konfirmasi Hapus <code>{prefix_to_delete}</code>", "callback_data": f"confirm_delete:{prefix_to_delete}"}],
-                                [{"text": "« Batalkan", "callback_data": "delete_menu"}]
-                            ]
-                        }
-                        
-                        ranges = load_inline_ranges()
-                        selected_range = next((r for r in ranges if r['range'] == prefix_to_delete), {"country": "N/A"})
-                        
-                        tg_edit(chat_id, menu_msg_id, f"⚠️ **Konfirmasi Penghapusan**\n\nApakah Anda yakin ingin menghapus range:\n**{selected_range['country']}** (<code>{prefix_to_delete}</code>)?", kb)
-                        return
+                    if data_cb == "getnum":
+                        # ... (logika getnum)
+                        continue
 
-                    # 7. Konfirmasi Penghapusan (confirm_delete:prefix)
-                    if data_cb.startswith("confirm_delete:"):
-                        prefix_to_delete = data_cb.split(":")[1]
-                        ranges = load_inline_ranges()
-                        
-                        # Buat daftar baru tanpa range yang dihapus
-                        updated_ranges = [r for r in ranges if r['range'] != prefix_to_delete]
-                        
-                        if len(updated_ranges) < len(ranges):
-                            save_inline_ranges(updated_ranges)
-                            tg_edit(chat_id, menu_msg_id, f"✅ Range <code>{prefix_to_delete}</code> berhasil dihapus. Sisa {len(updated_ranges)} range.", reply_markup={"inline_keyboard": [[{"text": "« Kembali ke Menu Utama", "callback_data": "manage_range"}]]})
-                        else:
-                            tg_edit(chat_id, menu_msg_id, "❌ Gagal menghapus. Range tidak ditemukan.", reply_markup={"inline_keyboard": [[{"text": "« Kembali ke Menu Utama", "callback_data": "manage_range"}]]})
-                        return
+                    if data_cb.startswith("select_range:"):
+                        prefix = data_cb.split(":")[1]
+                        tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
+                        await process_user_input(page, user_id, prefix, menu_msg_id)
+                        continue
 
-                # --- Callback Query NON-ADMIN ---
-                if data_cb == "verify":
-                    # ... (logika verify tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    continue
+                    if data_cb == "manual_range":
+                        # ... (logika manual_range)
+                        continue
 
-                if data_cb == "getnum":
-                    # ... (logika getnum tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    continue
+        except Exception as e:
+            # TANGKAP ERROR KRITIS APA PUN DI DALAM LOOP TELEGRAM
+            print(f"\n[CRITICAL LOOP ERROR] Loop Telegram Gagal: {type(e).__name__}: {e}")
+            # Tunggu 5 detik sebelum iterasi berikutnya
+            await asyncio.sleep(5) 
+            continue
 
-                if data_cb.startswith("select_range:"):
-                    # ... (logika select_range tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    prefix = data_cb.split(":")[1]
-                    tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
-                    await process_user_input(page, user_id, prefix, menu_msg_id)
-                    continue
+        await asyncio.sleep(1) # Jeda di akhir loop
 
-                if data_cb == "manual_range":
-                    # ... (logika manual_range tidak berubah)
-                    # (Dihilangkan untuk brevity)
-                    continue
-
-        await asyncio.sleep(1)
+# --- FUNGSI INITIALIZE FILES & MAIN (Tidak Berubah Signifikan) ---
 
 def initialize_files():
     files = {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]", WAIT_FILE: "[]"}
@@ -580,7 +602,6 @@ def initialize_files():
             with open(file, "w") as f:
                 f.write(default_content)
     
-    # Inisialisasi country.json jika belum ada
     if not os.path.exists(COUNTRY_EMOJI_FILE):
         default_emojis = {
             "NEPAL": "🇳🇵", "IVORY COAST": "🇨🇮", "GUINEA": "🇬🇳", 
@@ -614,7 +635,6 @@ async def main():
 
     try:
         async with async_playwright() as p:
-            # ... (logika koneksi playwright)
             try:
                 browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             except Exception as e:
@@ -629,11 +649,11 @@ async def main():
 
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
-            # ... (end logika koneksi playwright)
 
-            await telegram_loop(page)
+            await telegram_loop(page) # Harusnya sekarang lebih stabil
 
     except Exception as e:
+        # Menangkap error FATAL yang keluar dari telegram_loop
         print(f"[FATAL ERROR] An unexpected error occurred: {e}")
 
     finally:
