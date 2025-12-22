@@ -6,7 +6,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 # ================= CONFIG =================
-TOKEN = "TOKEN_BOT"
+TOKEN = "7386979557:AAEXKl33CCcaQgKes3acF9HBSZGnwRWissk"
 ADMIN_ID = 7184123643
 OTP_FILE = "otp.json"
 
