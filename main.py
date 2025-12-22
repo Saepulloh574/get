@@ -26,6 +26,7 @@ CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
+COUNTRY_EMOJI_FILE = "country.json" # FILE BARU DITAMBAHKAN
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot"
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1"
 GROUP_LINK_2 = "https://t.me/zura14g"
@@ -36,19 +37,20 @@ waiting_admin_input = set()
 pending_message = {}
 sent_numbers = set()
 
-COUNTRY_EMOJI = {
-    "NEPAL": "🇳🇵",
-    "IVORY COAST": "🇨🇮",
-    "GUINEA": "🇬🇳",
-    "CENTRAL AFRIKA": "🇨🇫",
-    "TOGO": "🇹🇬",
-    "TAJIKISTAN": "🇹🇯",
-    "BENIN": "🇧🇯",
-    "SIERRA LEONE": "🇸🇱",
-    "MADAGASCAR": "🇲🇬",
-    "AFGHANISTAN": "🇦🇫",
-    "ETHIOPIA": "🇪🇹",
-}
+# HAPUS kamus COUNTRY_EMOJI, diganti dengan variabel global yang dimuat di main
+GLOBAL_COUNTRY_EMOJI = {}
+
+
+def load_country_emojis():
+    """Memuat data emoji negara dari country.json."""
+    if os.path.exists(COUNTRY_EMOJI_FILE):
+        with open(COUNTRY_EMOJI_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                print(f"[ERROR] Gagal memuat {COUNTRY_EMOJI_FILE}: Format tidak valid.")
+                return {}
+    return {}
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -200,6 +202,8 @@ async def get_number_and_country(page):
     return None, None
 
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
+    global GLOBAL_COUNTRY_EMOJI # Menggunakan variabel global yang dimuat di main
+
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
 
     # --- START LOCK MODIFICATION (Feedback Antrian) ---
@@ -276,7 +280,8 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             save_cache({"number": number, "country": country})
             add_to_wait_list(number, user_id)
 
-            emoji = COUNTRY_EMOJI.get(country, "🗺️")
+            # MENGGUNAKAN GLOBAL_COUNTRY_EMOJI
+            emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️")
             msg = (
                 "✅ The number is ready\n\n"
                 f"📞 Number  : <code>{number}</code>\n"
@@ -358,12 +363,18 @@ async def telegram_loop(page):
                 if user_id in waiting_admin_input:
                     waiting_admin_input.remove(user_id)
                     new_ranges = []
+                    
+                    # MEMUAT ULANG GLOBAL_COUNTRY_EMOJI UNTUK DIGUNAKAN DI SINI
+                    global GLOBAL_COUNTRY_EMOJI
+                    GLOBAL_COUNTRY_EMOJI = load_country_emojis()
+                    
                     for line in text.strip().split('\n'):
                         if ' > ' in line:
                             parts = line.split(' > ', 1)
                             range_prefix = parts[0].strip()
                             country_name = parts[1].strip().upper()
-                            emoji = COUNTRY_EMOJI.get(country_name, "🗺️")
+                            # MENGGUNAKAN GLOBAL_COUNTRY_EMOJI
+                            emoji = GLOBAL_COUNTRY_EMOJI.get(country_name, "🗺️") 
                             new_ranges.append({
                                 "range": range_prefix, "country": country_name, "emoji": emoji
                             })
@@ -514,10 +525,32 @@ def initialize_files():
         if not os.path.exists(file):
             with open(file, "w") as f:
                 f.write("[]")
+    
+    # Inisialisasi file country.json jika belum ada
+    if not os.path.exists(COUNTRY_EMOJI_FILE):
+        default_emojis = {
+            "NEPAL": "🇳🇵",
+            "IVORY COAST": "🇨🇮",
+            "GUINEA": "🇬🇳",
+            "CENTRAL AFRIKA": "🇨🇫",
+            "TOGO": "🇹🇬",
+            "TAJIKISTAN": "🇹🇯",
+            "BENIN": "🇧🇯",
+            "SIERRA LEONE": "🇸🇱",
+            "MADAGASCAR": "🇲🇬",
+            "AFGHANISTAN": "🇦🇫",
+        }
+        with open(COUNTRY_EMOJI_FILE, "w") as f:
+            json.dump(default_emojis, f, indent=2)
 
 async def main():
     print("[INFO] Starting main bot (Telegram/Playwright)...")
     initialize_files()
+
+    # MEMUAT EMOTICON NEGARA SEKALI SAJA SAAT START
+    global GLOBAL_COUNTRY_EMOJI
+    GLOBAL_COUNTRY_EMOJI = load_country_emojis()
+    print(f"[INFO] Memuat {len(GLOBAL_COUNTRY_EMOJI)} emoji negara dari {COUNTRY_EMOJI_FILE}.")
 
     sms_process = None
     try:
