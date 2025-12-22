@@ -46,7 +46,8 @@ COUNTRY_EMOJI = {
     "BENIN": "🇧🇯",
     "SIERRA LEONE": "🇸🇱",
     "MADAGASCAR": "🇲🇬",
-    "AFGANISTAN": "🇦🇫",
+    "AFGHANISTAN": "🇦🇫",
+    "ETHIOPIA": "🇪🇹",
 }
 
 def load_cache():
