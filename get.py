@@ -115,7 +115,7 @@ async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         kb = [
             [InlineKeyboardButton("🔄 Change Num", callback_data=f"get_{c}")],
-            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/xxxxx")]
+            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/+E5grTSLZvbpiMTI1")]
         ]
 
         await q.edit_message_text(
