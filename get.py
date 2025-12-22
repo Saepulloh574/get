@@ -10,193 +10,105 @@ from telegram.ext import (
     filters
 )
 
-TOKEN = "7386979557:AAEXKl33CCcaQgKes3acF9HBSZGnwRWissk"
-ADMIN_ID = 7184123643  # ADMIN ONLY
+TOKEN = "ISI_TOKEN_BOT_LO"
+ADMIN_ID = 7184123643
 
-# ====== CREATE DIRECTORIES ======
+# ====== DIR ======
 for d in ["number", "step", "temp"]:
-    if not os.path.exists(d):
-        os.makedirs(d)
+    os.makedirs(d, exist_ok=True)
+
+OTP_FILE = "otp.json"
+
+def save_waiting_otp(user_id, number):
+    data = []
+    if os.path.exists(OTP_FILE):
+        try:
+            with open(OTP_FILE, "r") as f:
+                data = json.load(f)
+        except:
+            pass
+
+    data.append({
+        "user_id": user_id,
+        "number": number
+    })
+
+    with open(OTP_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 # ====== HELPERS ======
-async def send_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text, reply_markup=None):
-    chat_id = update.effective_chat.id
-    await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML", reply_markup=reply_markup)
+async def send(update, context, text, kb=None):
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=kb
+    )
 
-async def edit_message(update: Update, context: ContextTypes.DEFAULT_TYPE, text, reply_markup=None):
-    query = update.callback_query
-    try:
-        await query.edit_message_text(text=text, parse_mode="HTML", reply_markup=reply_markup)
-    except Exception as e:
-        if "Message is not modified" in str(e):
-            pass
-        else:
-            raise e
-
-# ====== COMMAND HANDLERS ======
+# ====== START ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    dirs = [f for f in os.listdir("number") if f.endswith(".json")]
-    if not dirs:
-        await send_message(update, context, "❌ Tidak ada country di folder number/")
+    files = [f.replace(".json","") for f in os.listdir("number") if f.endswith(".json")]
+    if not files:
+        await send(update, context, "❌ Tidak ada country")
         return
 
-    buttons = []
-    row = []
-    for i, f in enumerate(dirs, start=1):
-        ct = f.replace(".json", "")
-        row.append(InlineKeyboardButton(ct, callback_data=f"ct_{ct}"))
+    btn, row = [], []
+    for i,c in enumerate(files,1):
+        row.append(InlineKeyboardButton(c, callback_data=f"ct_{c}"))
         if i % 2 == 0:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
+            btn.append(row); row=[]
+    if row: btn.append(row)
 
-    await send_message(update, context, "🌍 <b>Pilih Country</b>", InlineKeyboardMarkup(buttons))
+    await send(update, context, "🌍 <b>Pilih Country</b>", InlineKeyboardMarkup(btn))
 
-async def addnum(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_ID:
-        await send_message(update, context, "❌ Anda bukan admin!")
-        return
-    with open(f"step/{update.effective_chat.id}.txt", "w") as f:
-        f.write("wait_numbers")
-    await send_message(update, context, "Silahkan kirim seluruh nomor (pisah baris).")
+# ====== CALLBACK ======
+async def cb(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    data = q.data
+    uid = q.message.chat.id
 
-async def hapus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_chat.id != ADMIN_ID:
-        await send_message(update, context, "❌ Anda bukan admin!")
-        return
-    dirs = [f for f in os.listdir("number") if f.endswith(".json")]
-    if not dirs:
-        await send_message(update, context, "❌ Tidak ada file number di folder number/")
-        return
-
-    buttons = []
-    row = []
-    for i, f in enumerate(dirs, start=1):
-        name = f.replace(".json", "")
-        row.append(InlineKeyboardButton(name, callback_data=f"del_{name}"))
-        if i % 2 == 0:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
-
-    await send_message(update, context, "🗑️ <b>Pilih file number yang ingin dihapus</b>", InlineKeyboardMarkup(buttons))
-
-# ====== CALLBACK HANDLER ======
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    chat_id_cb = query.message.chat.id
-
-    # ===== User pilih country ======
     if data.startswith("ct_"):
-        country = data[3:]
-        buttons = [[InlineKeyboardButton("📲 Get Num", callback_data=f"get_{country}")]]
-        await edit_message(update, context, f"🌍 Country: <b>{country}</b>\n\nKlik tombol di bawah untuk mengambil nomor.", InlineKeyboardMarkup(buttons))
+        c = data[3:]
+        kb = [[InlineKeyboardButton("📲 Get Number", callback_data=f"get_{c}")]]
+        await q.edit_message_text(f"🌍 <b>{c}</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
-    # ===== User klik Get Num ======
     elif data.startswith("get_"):
-        country = data[4:]
-        file_path = f"number/{country}.json"
-        if not os.path.exists(file_path):
-            await edit_message(update, context, "❌ File number tidak ditemukan.")
+        c = data[4:]
+        path = f"number/{c}.json"
+        if not os.path.exists(path):
+            await q.edit_message_text("❌ File tidak ada")
             return
-        with open(file_path, "r") as f:
-            numbers = json.load(f)
-        if not numbers:
-            await edit_message(update, context, "❌ Number habis.")
+
+        nums = json.load(open(path))
+        if not nums:
+            await q.edit_message_text("❌ Number habis")
             return
-        num = numbers.pop(0)
-        with open(file_path, "w") as f:
-            json.dump(numbers, f, indent=4)
-        buttons = [
-            [InlineKeyboardButton("🔄 Change Num", callback_data=f"chg_{country}")],
-            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/+E5grTSLZvbpiMTI1")]
+
+        num = nums.pop(0)
+        json.dump(nums, open(path,"w"), indent=2)
+
+        save_waiting_otp(uid, f"+{num}")
+
+        kb = [
+            [InlineKeyboardButton("🔄 Change Num", callback_data=f"get_{c}")],
+            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/xxxxx")]
         ]
-        await edit_message(update, context, f"🎉 <b>Your Number !!!</b>\n\n📱 Number: <code>+{num}</code>\n🌍 Country: <b>{country}</b>\n\n✨ Silahkan Gunakan", InlineKeyboardMarkup(buttons))
 
-    # ===== User klik Change Num ======
-    elif data.startswith("chg_"):
-        country = data[4:]
-        file_path = f"number/{country}.json"
-        if not os.path.exists(file_path):
-            await edit_message(update, context, "❌ File number tidak ditemukan.")
-            return
-        with open(file_path, "r") as f:
-            numbers = json.load(f)
-        if not numbers:
-            await edit_message(update, context, "❌ Number habis.")
-            return
-        num = numbers.pop(0)
-        with open(file_path, "w") as f:
-            json.dump(numbers, f, indent=4)
-        buttons = [
-            [InlineKeyboardButton("🔄 Change Num", callback_data=f"chg_{country}")],
-            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/+E5grTSLZvbpiMTI1")]
-        ]
-        await edit_message(update, context, f"🔄 <b>Changed Number !!!</b>\n\n📱 Number: <code>+{num}</code>\n🌍 Country: <b>{country}</b>\n\n✨ Gunakan nomor baru kamu", InlineKeyboardMarkup(buttons))
+        await q.edit_message_text(
+            f"""🎉 <b>Your Number</b>
 
-    # ===== ADMIN: Hapus file ======
-    elif data.startswith("del_"):
-        if chat_id_cb != ADMIN_ID:
-            await edit_message(update, context, "❌ Hanya admin yang bisa menghapus file.")
-            return
-        file_to_del = data[4:]
-        file_path = f"number/{file_to_del}.json"
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            await edit_message(update, context, f"✅ File <b>{file_to_del}</b> berhasil dihapus.")
-        else:
-            await edit_message(update, context, f"❌ File <b>{file_to_del}</b> tidak ditemukan.")
+📱 <code>+{num}</code>
+🌍 <b>{c}</b>
 
-# ====== ADMIN STEPS ======
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    step_file = f"step/{chat_id}.txt"
-    if not os.path.exists(step_file):
-        return
-
-    if chat_id != ADMIN_ID:
-        await send_message(update, context, "❌ Anda bukan admin!")
-        os.remove(step_file)
-        return
-
-    with open(step_file, "r") as f:
-        step = f.read()
-
-    text = update.message.text
-
-    # STEP 1: terima nomor
-    if step == "wait_numbers":
-        nums_raw = text.split("\n")
-        nums = list({''.join(filter(str.isdigit, n)) for n in nums_raw if n.strip()})
-        count = len(nums)
-        with open(f"temp/{chat_id}.json", "w") as f:
-            json.dump(nums, f)
-        with open(step_file, "w") as f:
-            f.write("wait_title")
-        await send_message(update, context, f"Nomor diterima: <b>{count}</b> nomor (tanpa duplikat)\n\nSekarang beri judul/country, contoh:\n<b>Peru🇵🇪</b>")
-
-    # STEP 2: terima nama country
-    elif step == "wait_title":
-        title = text.strip()
-        with open(f"temp/{chat_id}.json", "r") as f:
-            nums = json.load(f)
-        with open(f"number/{title}.json", "w") as f:
-            json.dump(nums, f, indent=4)
-        os.remove(step_file)
-        os.remove(f"temp/{chat_id}.json")
-        await send_message(update, context, f"✅ <b>Sukses menyimpan:</b>\n<b>{title}</b>\n{len(nums)} number.")
+⏳ <i>Menunggu OTP...</i>""",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
 # ====== MAIN ======
 app = ApplicationBuilder().token(TOKEN).build()
-
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("addnum", addnum))
-app.add_handler(CommandHandler("hapus", hapus))
-app.add_handler(CallbackQueryHandler(callback_handler))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(CallbackQueryHandler(cb))
 
-print("Bot is running...")
+print("GET BOT RUNNING")
 app.run_polling()
