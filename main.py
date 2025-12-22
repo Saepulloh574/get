@@ -9,10 +9,12 @@ import subprocess
 import sys
 import time
 
-# ================= LOCK =================
+# --- MODIFIKASI: ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
 playwright_lock = asyncio.Lock()
+# ------------------------------------------------------
 
 load_dotenv()
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
 GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
@@ -47,100 +49,182 @@ COUNTRY_EMOJI = {
     "AFGANISTAN": "🇦🇫",
 }
 
-# ================= FILE UTILS =================
-def load_json(file, default):
-    if os.path.exists(file):
-        try:
-            with open(file, "r") as f:
-                return json.load(f)
-        except:
-            return default
-    return default
+# ================= FILE HANDLER =================
 
-def save_json(file, data):
-    with open(file, "w") as f:
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+def save_cache(number_entry):
+    cache = load_cache()
+    cache.append(number_entry)
+    with open(CACHE_FILE, "w") as f:
+        json.dump(cache, f, indent=2)
+
+def is_in_cache(number):
+    return any(entry["number"] == number for entry in load_cache())
+
+def load_inline_ranges():
+    if os.path.exists(INLINE_RANGE_FILE):
+        with open(INLINE_RANGE_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+def save_inline_ranges(ranges):
+    with open(INLINE_RANGE_FILE, "w") as f:
+        json.dump(ranges, f, indent=2)
+
+def load_wait_list():
+    if os.path.exists(WAIT_FILE):
+        with open(WAIT_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return []
+    return []
+
+def save_wait_list(data):
+    with open(WAIT_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+def add_to_wait_list(number, user_id):
+    wait_list = load_wait_list()
+    normalized = normalize_number(number)
+    if not any(i["number"] == normalized for i in wait_list):
+        wait_list.append({
+            "number": normalized,
+            "user_id": user_id,
+            "timestamp": time.time()
+        })
+        save_wait_list(wait_list)
+
+def normalize_number(number):
+    n = number.strip().replace(" ", "").replace("-", "")
+    if not n.startswith("+"):
+        n = "+" + n
+    return n
+
+def is_valid_phone_number(text):
+    return re.fullmatch(r"^\+?\d{6,15}$", text.replace(" ", "").replace("-", ""))
+
 # ================= TELEGRAM =================
+
 def tg_send(chat_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
-        payload["reply_markup"] = reply_markup
-    r = requests.post(f"{API}/sendMessage", json=payload).json()
-    return r.get("result", {}).get("message_id")
+        data["reply_markup"] = reply_markup
+    try:
+        r = requests.post(f"{API}/sendMessage", json=data).json()
+        if r.get("ok"):
+            return r["result"]["message_id"]
+    except:
+        pass
+    return None
 
 def tg_edit(chat_id, msg_id, text, reply_markup=None):
-    payload = {"chat_id": chat_id, "message_id": msg_id, "text": text, "parse_mode": "HTML"}
+    data = {
+        "chat_id": chat_id,
+        "message_id": msg_id,
+        "text": text,
+        "parse_mode": "HTML"
+    }
     if reply_markup:
-        payload["reply_markup"] = reply_markup
-    requests.post(f"{API}/editMessageText", json=payload)
+        data["reply_markup"] = reply_markup
+    try:
+        requests.post(f"{API}/editMessageText", json=data)
+    except:
+        pass
 
 def tg_get_updates(offset):
-    return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 1}).json()
+    try:
+        return requests.get(
+            f"{API}/getUpdates",
+            params={"offset": offset, "timeout": 1}
+        ).json()
+    except:
+        return {"ok": False, "result": []}
 
 # ================= PLAYWRIGHT =================
+
 async def get_number_and_country(page):
     rows = await page.query_selector_all("tbody tr")
     for row in rows:
         phone_el = await row.query_selector(".phone-number")
         if not phone_el:
             continue
+
         number = (await phone_el.inner_text()).strip()
-        if not number:
+        if is_in_cache(number):
             continue
+
+        if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
+            continue
+
         country_el = await row.query_selector(".badge.bg-primary")
         country = (await country_el.inner_text()).strip().upper() if country_el else "-"
-        return number, country
+
+        if number and len(number) > 5:
+            return number, country
+
     return None, None
 
+# ================= CORE PROCESS =================
+
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
-    msg_id = message_id_to_edit if message_id_to_edit else pending_message.get(user_id)
+    msg_id = message_id_to_edit or pending_message.pop(user_id, None)
 
     if playwright_lock.locked():
-        tg_edit(user_id, msg_id, f"⏳ Masuk antrian...\nRange: <code>{prefix}</code>")
+        msg_id = msg_id or tg_send(user_id, f"⏳ Permintaan masuk antrian\nRange: <code>{prefix}</code>")
 
     async with playwright_lock:
         try:
-            tg_edit(user_id, msg_id, f"⏳ Mengambil number...\nRange: <code>{prefix}</code>")
+            tg_edit(user_id, msg_id, f"✅ Sedang mengambil number...\nRange: <code>{prefix}</code>")
 
-            await page.wait_for_selector('input[name="numberrange"]', timeout=15000)
+            await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
             await page.fill('input[name="numberrange"]', prefix)
             await asyncio.sleep(0.5)
 
-            # ================= FIX SATU-SATUNYA =================
+            # ===== INI YANG DIMODIFIKASI SESUAI PERMINTAAN =====
             await page.click("#getNumberBtn", force=True)
-            await page.wait_for_selector("tbody tr", timeout=15000)
-            # ❌ TIDAK ADA page.reload()
-            # ====================================================
+
+            try:
+                await page.wait_for_selector("tbody tr", timeout=15000)
+            except:
+                pass
+            # ==================================================
 
             number, country = await get_number_and_country(page)
+
             if not number:
-                tg_edit(user_id, msg_id, "❌ Nomor tidak ditemukan.")
+                tg_edit(user_id, msg_id, "❌ Nomor tidak ditemukan, silakan coba ulang.")
                 return
 
+            save_cache({"number": number, "country": country})
+            add_to_wait_list(number, user_id)
+
             emoji = COUNTRY_EMOJI.get(country, "🗺️")
-            msg = (
-                "✅ The number is ready\n\n"
-                f"📞 Number  : <code>{number}</code>\n"
+            tg_edit(
+                user_id,
+                msg_id,
+                f"✅ The number is ready\n\n"
+                f"📞 <code>{number}</code>\n"
                 f"{emoji} COUNTRY : {country}\n"
-                f"🏷️ Range   : <code>{prefix}</code>\n\n"
-                "<b>OTP akan dikirim otomatis.</b>"
+                f"🏷️ Range : <code>{prefix}</code>"
             )
 
-            kb = {
-                "inline_keyboard": [
-                    [{"text": "📲 Get Number", "callback_data": "getnum"}],
-                    [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
-                ]
-            }
-
-            tg_edit(user_id, msg_id, msg, kb)
-
         except Exception as e:
-            print("[ERROR]", e)
-            tg_edit(user_id, msg_id, "❌ Error saat mengambil number.")
+            tg_edit(user_id, msg_id, f"❌ ERROR: {type(e).__name__}")
 
 # ================= TELEGRAM LOOP =================
+
 async def telegram_loop(page):
     offset = 0
     while True:
@@ -148,40 +232,41 @@ async def telegram_loop(page):
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
 
-            if "message" in upd:
-                msg = upd["message"]
-                user_id = msg["from"]["id"]
-                text = msg.get("text", "")
-
-                if text == "/start":
-                    mid = tg_send(
-                        user_id,
-                        "Klik tombol untuk ambil number",
-                        {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]}
-                    )
-                    pending_message[user_id] = mid
-
-                elif user_id in waiting_range:
-                    waiting_range.remove(user_id)
-                    await process_user_input(page, user_id, text, pending_message[user_id])
-
             if "callback_query" in upd:
                 cq = upd["callback_query"]
-                user_id = cq["from"]["id"]
-                data_cb = cq["data"]
-                msg_id = cq["message"]["message_id"]
+                uid = cq["from"]["id"]
+                mid = cq["message"]["message_id"]
+                cid = cq["message"]["chat"]["id"]
 
-                if data_cb == "getnum":
-                    waiting_range.add(user_id)
-                    pending_message[user_id] = msg_id
-                    tg_edit(user_id, msg_id, "Kirim range contoh:\n<code>9377009XXX</code>")
+                if cq["data"] == "getnum":
+                    waiting_range.add(uid)
+                    pending_message[uid] = mid
+                    tg_edit(cid, mid, "Kirim range contoh: <code>9377009XXX</code>")
+
+            if "message" in upd:
+                msg = upd["message"]
+                uid = msg["from"]["id"]
+                text = msg.get("text", "")
+
+                if uid in waiting_range:
+                    waiting_range.remove(uid)
+                    await process_user_input(page, uid, text)
 
         await asyncio.sleep(1)
 
 # ================= MAIN =================
+
+def initialize_files():
+    for f in [CACHE_FILE, INLINE_RANGE_FILE, WAIT_FILE]:
+        if not os.path.exists(f):
+            with open(f, "w") as x:
+                x.write("[]")
+
 async def main():
     print("[INFO] Starting bot...")
-    subprocess.Popen([sys.executable, "sms.py"])
+    initialize_files()
+
+    sms_process = subprocess.Popen([sys.executable, "sms.py"])
 
     async with async_playwright() as p:
         browser = await p.chromium.connect_over_cdp("http://localhost:9222")
