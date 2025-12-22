@@ -94,7 +94,7 @@ async def callback_handler(update, context):
         json.dump(nums, open(path,"w"), indent=4)
         save_waiting_otp(uid,f"+{num}")
         kb=[[InlineKeyboardButton("🔄 Change Num", callback_data=f"get_{c}")],
-            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/...")]]
+            [InlineKeyboardButton("🔗 OTP Grup", url="https://t.me/+E5grTSLZvbpiMTI1")]]
         await edit(update, context,f"🎉 <b>Your Number</b>\n\n📱 <code>+{num}</code>\n🌍 <b>{c}</b>\n⏳ <i>Menunggu OTP...</i>", InlineKeyboardMarkup(kb))
 
     # hapus file (admin)
