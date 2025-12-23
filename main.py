@@ -137,6 +137,8 @@ def normalize_number(number):
     return normalized_number
 
 def is_valid_phone_number(text):
+    # Regex untuk mengecek apakah input hanya berisi angka, spasi, dash, dan opsional tanda '+' di depan.
+    # Digunakan di /start untuk mencegah input range berupa nomor lengkap
     return re.fullmatch(r"^+?\d{6,15}$", text.replace(" ", "").replace("-", ""))
 
 def tg_send(chat_id, text, reply_markup=None):
@@ -144,7 +146,6 @@ def tg_send(chat_id, text, reply_markup=None):
     if reply_markup:
         data["reply_markup"] = reply_markup
     try:
-        # requests.post dengan json=data secara otomatis menggunakan encoding UTF-8
         r = requests.post(f"{API}/sendMessage", json=data).json()
         if r.get("ok"):
             return r["result"]["message_id"]
@@ -185,27 +186,49 @@ def is_user_in_both_groups(user_id):
     is_member_2 = is_user_in_group(user_id, GROUP_ID_2)
     return is_member_1 and is_member_2
 
+# --- MODIFIKASI FUNGSI PENGAMBILAN NOMOR UNTUK MENGECEK "Just now" ---
 async def get_number_and_country(page):
+    """
+    Mengambil nomor pertama dari tabel yang memiliki status Last Activity "Just now",
+    belum ada di cache, dan status web bukan 'success' atau 'failed'.
+    """
     rows = await page.query_selector_all("tbody tr")
-    for row in rows:
-        phone_el = await row.query_selector(".phone-number")
-        if not phone_el:
-            continue
-        number = (await phone_el.inner_text()).strip()
+    
+    for row in rows: 
+        # Coba ambil teks 'Last Activity'
+        time_el = await row.query_selector("td small.text-muted")
         
-        if is_in_cache(number):
-            continue
-        
-        if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
-            continue
+        if time_el:
+            last_activity_text = (await time_el.inner_text()).strip().lower()
+            
+            # Kriteria 1: Harus "Just now"
+            if last_activity_text != "just now":
+                continue # Lewati jika bukan nomor terbaru
+                
+            # Kriteria 2: Ambil Nomor
+            phone_el = await row.query_selector(".phone-number")
+            if not phone_el:
+                continue
 
-        country_el = await row.query_selector(".badge.bg-primary")
-        country = (await country_el.inner_text()).strip().upper() if country_el else "-"
+            number = (await phone_el.inner_text()).strip()
+            
+            # Kriteria 3: Belum di cache
+            if is_in_cache(number):
+                continue
+            
+            # Kriteria 4: Status web bukan success/failed
+            if await row.query_selector(".status-success") or await row.query_selector(".status-failed"):
+                continue
 
-        if number and len(number) > 5:
-            return number, country
+            # Jika semua kriteria lolos
+            country_el = await row.query_selector(".badge.bg-primary")
+            country = (await country_el.inner_text()).strip().upper() if country_el else "-"
+
+            if number and len(number) > 5:
+                return number, country # Nomor pertama yang 'Just now' akan dikembalikan
 
     return None, None
+# --- AKHIR MODIFIKASI FUNGSI PENGAMBILAN NOMOR ---
 
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     global GLOBAL_COUNTRY_EMOJI 
@@ -227,7 +250,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
                 if not msg_id: return
 
-            tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengambil Number...\nRange: <code>{prefix}</code>")
+            tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengirim range ke web...\nRange: <code>{prefix}</code>")
 
             # --- Interaksi Playwright ---
             await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
@@ -245,13 +268,14 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 print(f"[INFO] Timeout menunggu hasil AJAX setelah klik getNumberBtn untuk range {prefix}. Melanjutkan...")
                 pass
             
-            await asyncio.sleep(2) # Beri jeda stabilitas DOM
+            await asyncio.sleep(1) # Beri jeda stabilitas DOM
 
             number, country = await get_number_and_country(page)
 
             if not number:
-                # --- LOADING DINAMIS ---
-                delay_duration = 5.0
+                # --- LOADING DINAMIS (Menunggu status 'Just now' muncul) ---
+                # Durasi diperpanjang karena kita menunggu status 'Just now' yang butuh waktu.
+                delay_duration = 10.0 
                 update_interval = 0.5
                 
                 loading_statuses = [
@@ -274,7 +298,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 # --- END LOADING DINAMIS ---
 
             if not number:
-                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN SILAHKAN KLIK /start - GET NUMBER ULANG")
+                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN ATAU STATUS BUKAN 'Just now'. SILAHKAN KLIK /start - GET NUMBER ULANG")
                 return
 
             save_cache({"number": number, "country": country})
