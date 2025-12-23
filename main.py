@@ -259,54 +259,67 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
             tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengirim range ke web...\nRange: <code>{prefix}</code>")
 
-            # --- Interaksi Playwright ---
-            await asyncio.sleep(1) # Jeda stabilitas
+            # --- Interaksi Playwright (Alur Baru) ---
             
+            # 1. Isi input
             await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
             await page.fill('input[name="numberrange"]', prefix)
+            
+            # 2. Jeda 0.5 detik
             await asyncio.sleep(0.5)
 
-            # Klik tombol
+            # 3. Klik tombol "Get number"
             await page.click("#getNumberBtn", force=True)
+            
+            # 4. Jeda 0.5 detik
+            await asyncio.sleep(0.5)
 
-            # --- RELOAD DAN JEDA ---
-            tg_edit(user_id, msg_id, f"🔄 Mengklik, memuat ulang halaman, dan menunggu 'Just now'...\nRange: <code>{prefix}</code>")
+            # 5. Refresh halaman
+            tg_edit(user_id, msg_id, f"🔄 Mengklik, me-refresh halaman...\nRange: <code>{prefix}</code>")
+            await page.reload(wait_until='domcontentloaded', timeout=15000)
             
-            # Perintah refresh
-            await page.reload(wait_until='domcontentloaded', timeout=15000) # Tambahkan timeout reload
-            
-            # Jeda 2 detik (Sesuai permintaan)
+            # 6. Jeda 2 detik (Jeda stabilitas setelah reload)
             await asyncio.sleep(2)
             
-            # --- LOADING DINAMIS (Menunggu status 'Just now' muncul) ---
-            delay_duration = 15.0 # Total waktu tunggu 15 detik
+            # 7. Mulai mencari nomor (Maksimal 2 kali pencarian @ 3 detik)
+            delay_duration_round_1 = 3.0
+            delay_duration_round_2 = 3.0
             update_interval = 0.5
             number = None
             
             loading_statuses = [
-                "⏳ Mencari nomor .",
-                "⏳ Mencari nomor ..",
-                "⏳ Mencari nomor ...",
-                "⏳ Mencari nomor ....",
-                "⏳ Mencari nomor .....",
+                "⏳ Mencari nomor .", "⏳ Mencari nomor ..", "⏳ Mencari nomor ...",
             ]
 
+            # --- Round 1 (3 detik) ---
             start_time = time.time()
+            tg_edit(user_id, msg_id, f"⏳ Mencari nomor (Siklus 1/2)...\nRange: <code>{prefix}</code>")
             
-            # Loop selama waktu tunggu belum habis DAN nomor belum ditemukan
-            while (time.time() - start_time) < delay_duration and not number:
-                # Update status di Telegram
+            while (time.time() - start_time) < delay_duration_round_1 and not number:
                 index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
                 current_status = loading_statuses[index]
-                tg_edit(user_id, msg_id, f"{current_status}\nRange: <code>{prefix}</code>")
+                tg_edit(user_id, msg_id, f"{current_status} (Siklus 1/2)\nRange: <code>{prefix}</code>")
                 
-                # Coba ekstrak nomor
                 number, country = await get_number_and_country(page)
-                
                 if number:
-                    break # Keluar dari loop jika nomor ditemukan
-                
+                    break
                 await asyncio.sleep(update_interval)
+
+            # --- Round 2 (Jika belum ditemukan, cari lagi 3 detik) ---
+            if not number:
+                start_time = time.time()
+                tg_edit(user_id, msg_id, f"⏳ Mencari nomor (Siklus 2/2)...\nRange: <code>{prefix}</code>")
+                
+                while (time.time() - start_time) < delay_duration_round_2 and not number:
+                    index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
+                    current_status = loading_statuses[index]
+                    tg_edit(user_id, msg_id, f"{current_status} (Siklus 2/2)\nRange: <code>{prefix}</code>")
+                    
+                    number, country = await get_number_and_country(page)
+                    if number:
+                        break
+                    await asyncio.sleep(update_interval)
+
 
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN ATAU STATUS BUKAN 'Just now'. SILAHKAN KLIK /start - GET NUMBER ULANG")
@@ -357,37 +370,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan fatal ({error_type}). Mohon coba lagi atau hubungi admin.")
     # --- END Lock Utama Playwright ---
 
-async def refresh_loop(page):
-    """
-    Melakukan refresh halaman Playwright setiap 10 detik dan memiliki penanganan error yang kuat.
-    """
-    REFRESH_INTERVAL = 10  # Detik
-    DELAY_AFTER_ACTION = 2 # Detik (Untuk tunda setelah aktivitas/perintah)
-
-    while True:
-        await asyncio.sleep(REFRESH_INTERVAL)
-        
-        # Cek apakah lock sedang digunakan oleh tugas lain (misalnya process_user_input)
-        if playwright_lock.locked():
-            print("[INFO REFRESH] Playwright sedang digunakan, melewati siklus refresh.")
-            continue
-            
-        # Gunakan lock saat akan mengakses Playwright
-        async with playwright_lock:
-            try:
-                print(f"[INFO REFRESH] Melakukan refresh halaman...")
-                # Perintah refresh
-                await page.reload(wait_until='domcontentloaded', timeout=15000)
-                print(f"[INFO REFRESH] Halaman berhasil di-refresh.")
-
-            except PlaywrightTimeoutError:
-                print("[ERROR REFRESH] Timeout saat refresh halaman. Melanjutkan loop.")
-            except Exception as e:
-                error_type = e.__class__.__name__
-                print(f"[ERROR REFRESH FATAL DIBLOKIR] Gagal total saat refresh ({error_type}): {e}")
-                
-            # Tambahkan jeda setelah aktivitas/perintah refresh
-            await asyncio.sleep(DELAY_AFTER_ACTION)
+# --- FUNGSI REFRESH_LOOP DIHAPUS ---
 
 async def telegram_loop(page):
     offset = 0
@@ -666,10 +649,11 @@ async def main():
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
 
-            # --- MENJALANKAN DUA LOOP SECARA PARALEL ---
+            # --- MENJALANKAN LOOP TELEGRAM SAJA ---
+            # Menghapus refresh_loop dari asyncio.gather
             await asyncio.gather(
                 telegram_loop(page),
-                refresh_loop(page)
+                # refresh_loop(page) # DIHAPUS
             )
             # --- AKHIR MODIFIKASI UTAMA ---
 
