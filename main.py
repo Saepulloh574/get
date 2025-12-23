@@ -284,11 +284,11 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             number = None
             
             loading_statuses = [
-                "⏳ Mencari nomor s.",
-                "⏳ Mencari nomor sa..",
-                "⏳ Mencari nomor sab...",
-                "⏳ Mencari nomor saba....",
-                "⏳ Mencari nomor sabar.....",
+                "⏳ Mencari nomor .",
+                "⏳ Mencari nomor ..",
+                "⏳ Mencari nomor ...",
+                "⏳ Mencari nomor ....",
+                "⏳ Mencari nomor .....",
             ]
 
             start_time = time.time()
@@ -334,7 +334,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             inline_kb = {
                 "inline_keyboard": [
                     # Menggunakan prefix yang baru saja sukses sebagai callback data
-                    [{"text": "📲 Change Number", "callback_data": f"change_num:{prefix}"}],
+                    [{"text": "🔄 Change Number", "callback_data": f"change_num:{prefix}"}],
                     [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
                 ]
             }
