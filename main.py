@@ -43,6 +43,11 @@ waiting_admin_input = set()
 pending_message = {}
 sent_numbers = set()
 
+# --- VARIABEL GLOBAL BARU ---
+# Menyimpan range terakhir yang berhasil digunakan user: {user_id: prefix}
+last_used_range = {}
+# ---------------------------
+
 # Variabel global untuk menyimpan emoji yang dimuat dari file
 GLOBAL_COUNTRY_EMOJI = {}
 
@@ -95,6 +100,7 @@ def save_inline_ranges(ranges):
         json.dump(ranges, f, indent=2)
 
 def generate_inline_keyboard(ranges):
+    # --- MODIFIKASI: MENGHAPUS TOMBOL MANUAL RANGE ---
     keyboard = []
     current_row = []
     for item in ranges:
@@ -109,7 +115,7 @@ def generate_inline_keyboard(ranges):
     if current_row:
         keyboard.append(current_row)
 
-    keyboard.append([{"text": "Manual Range", "callback_data": "manual_range"}])
+    # Menghapus: keyboard.append([{"text": "Manual Range", "callback_data": "manual_range"}])
     return {"inline_keyboard": keyboard}
 
 def load_wait_list():
@@ -230,9 +236,9 @@ async def get_number_and_country(page):
 
     return None, None
 
-# --- FUNGSI PROCESS_USER_INPUT TELAH DIMODIFIKASI UNTUK RELOAD DAN PENANGANAN ERROR KUAT ---
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     global GLOBAL_COUNTRY_EMOJI 
+    global last_used_range # Tambahkan variabel global
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
 
@@ -263,7 +269,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             # Klik tombol
             await page.click("#getNumberBtn", force=True)
 
-            # --- MODIFIKASI: RELOAD DAN JEDA ---
+            # --- RELOAD DAN JEDA ---
             tg_edit(user_id, msg_id, f"🔄 Mengklik, memuat ulang halaman, dan menunggu 'Just now'...\nRange: <code>{prefix}</code>")
             
             # Perintah refresh
@@ -302,14 +308,16 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 
                 await asyncio.sleep(update_interval)
 
-            # --- AKHIR MODIFIKASI ---
-
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN ATAU STATUS BUKAN 'Just now'. SILAHKAN KLIK /start - GET NUMBER ULANG")
                 return
 
             save_cache({"number": number, "country": country})
             add_to_wait_list(number, user_id)
+            
+            # --- MODIFIKASI: SIMPAN RANGE TERAKHIR ---
+            last_used_range[user_id] = prefix 
+            # ----------------------------------------
 
             # Menggunakan GLOBAL_COUNTRY_EMOJI
             emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️")
@@ -322,12 +330,15 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 "<b>OTP akan dikirimkan ke chat ini Atau Check OTP grup.</b>"
             )
 
+            # --- MODIFIKASI: TAMBAH TOMBOL 'CHANGE NUMBER' ---
             inline_kb = {
                 "inline_keyboard": [
-                    [{"text": "📲 Get Number", "callback_data": "getnum"}],
+                    # Menggunakan prefix yang baru saja sukses sebagai callback data
+                    [{"text": "📲 Change Number", "callback_data": f"change_num:{prefix}"}],
                     [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
                 ]
             }
+            # -------------------------------------------------
 
             tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
 
@@ -486,7 +497,7 @@ async def telegram_loop(page):
                         tg_send(user_id, msg_text, kb)
                     continue
 
-                # --- RANGE INPUT (Manual) ---
+                # --- INPUT RANGE (Untuk input range yang tidak sengaja dilakukan user tanpa callback/command) ---
                 if user_id in waiting_range:
                     waiting_range.remove(user_id)
                     prefix = text.strip()
@@ -543,11 +554,12 @@ async def telegram_loop(page):
 
                     if inline_ranges:
                         kb = generate_inline_keyboard(inline_ranges)
-                        msg_text = "Silahkan gunakan range di bawah atau Manual range untuk mendapatkan nomor."
+                        msg_text = "Silahkan gunakan range di bawah untuk mendapatkan nomor." # Teks diubah, manual range dihapus
 
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\n{msg_text}", kb)
                         pending_message[user_id] = menu_msg_id
                     else:
+                        # Jika tidak ada inline range, user diarahkan untuk mengetik range
                         waiting_range.add(user_id)
                         tg_edit(chat_id, menu_msg_id, "Kirim range contoh: <code>9377009XXX</code>")
                         pending_message[user_id] = menu_msg_id
@@ -566,13 +578,26 @@ async def telegram_loop(page):
                     await process_user_input(page, user_id, prefix, menu_msg_id)
                     continue
 
-                if data_cb == "manual_range":
-                    waiting_range.add(user_id)
+                # --- IMPLEMENTASI CHANGE NUMBER ---
+                if data_cb.startswith("change_num:"):
+                    if user_id not in verified_users:
+                        tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
+                        return
 
-                    tg_edit(chat_id, menu_msg_id, "<b>Get Number</b>\n\nKirim range contoh: <code>9377009XXX</code>")
+                    prefix = data_cb.split(":")[1] # Ambil prefix dari callback data
 
-                    pending_message[user_id] = menu_msg_id
+                    if not prefix:
+                        tg_edit(chat_id, menu_msg_id, "❌ Tidak ada range terakhir yang tersimpan. Silakan pilih range baru melalui /start.")
+                        return
+
+                    tg_edit(chat_id, menu_msg_id, f"<b>Change Number</b>\n\nRange: <code>{prefix}</code>\n⏳ Sedang memproses ulang...")
+
+                    # Gunakan await untuk memproses input dengan range yang sama
+                    await process_user_input(page, user_id, prefix, menu_msg_id)
                     continue
+                # ----------------------------------
+                
+                # CATATAN: Logika 'manual_range' telah dihapus sepenuhnya di sini
 
         await asyncio.sleep(1)
 
