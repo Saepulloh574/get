@@ -102,7 +102,7 @@ def check_and_forward():
         # A. Cek Timeout/Kedaluwarsa
         if current_time - timestamp > WAIT_TIMEOUT_SECONDS:
             timeout_msg = (
-                "❌ NOMOR KEDALUWARSA ❌\n\n"
+                "expired number,removed from the waiting list\n\n"
                 f"📞 Number: <code>{wait_number}</code>\n"
                 f"Waktu tunggu ({WAIT_TIMEOUT_SECONDS // 60} menit) telah habis. Nomor dihapus dari daftar tunggu."
             )
