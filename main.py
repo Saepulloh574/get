@@ -188,7 +188,6 @@ def is_user_in_both_groups(user_id):
     is_member_2 = is_user_in_group(user_id, GROUP_ID_2)
     return is_member_1 and is_member_2
 
-# --- MODIFIKASI FUNGSI PENGAMBILAN NOMOR UNTUK MENGECEK "Just now" ---
 async def get_number_and_country(page):
     """
     Mengambil nomor pertama dari tabel yang memiliki status Last Activity "Just now",
@@ -230,8 +229,8 @@ async def get_number_and_country(page):
                 return number, country # Nomor pertama yang 'Just now' akan dikembalikan
 
     return None, None
-# --- AKHIR MODIFIKASI FUNGSI PENGAMBILAN NOMOR ---
 
+# --- FUNGSI PROCESS_USER_INPUT TELAH DIMODIFIKASI UNTUK RELOAD DAN PENANGANAN ERROR KUAT ---
 async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
     global GLOBAL_COUNTRY_EMOJI 
 
@@ -255,52 +254,55 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengirim range ke web...\nRange: <code>{prefix}</code>")
 
             # --- Interaksi Playwright ---
-            # Tambahkan jeda 2 detik sesuai permintaan sebelum interaksi
-            await asyncio.sleep(2) 
+            await asyncio.sleep(1) # Jeda stabilitas
             
             await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
             await page.fill('input[name="numberrange"]', prefix)
             await asyncio.sleep(0.5)
 
-            # Klik tombol tanpa reload
+            # Klik tombol
             await page.click("#getNumberBtn", force=True)
 
-            # Menunggu hasil AJAX (tabel diperbarui)
-            try:
-                # Menunggu setidaknya satu baris baru muncul di dalam tbody
-                await page.wait_for_selector("tbody tr", timeout=15000)
-            except PlaywrightTimeoutError:
-                print(f"[INFO] Timeout menunggu hasil AJAX setelah klik getNumberBtn untuk range {prefix}. Melanjutkan...")
-                pass
+            # --- MODIFIKASI: RELOAD DAN JEDA ---
+            tg_edit(user_id, msg_id, f"🔄 Mengklik, memuat ulang halaman, dan menunggu 'Just now'...\nRange: <code>{prefix}</code>")
             
-            await asyncio.sleep(1) # Beri jeda stabilitas DOM
+            # Perintah refresh
+            await page.reload(wait_until='domcontentloaded', timeout=15000) # Tambahkan timeout reload
+            
+            # Jeda 2 detik (Sesuai permintaan)
+            await asyncio.sleep(2)
+            
+            # --- LOADING DINAMIS (Menunggu status 'Just now' muncul) ---
+            delay_duration = 15.0 # Total waktu tunggu 15 detik
+            update_interval = 0.5
+            number = None
+            
+            loading_statuses = [
+                "⏳ Mencari nomor s.",
+                "⏳ Mencari nomor sa..",
+                "⏳ Mencari nomor sab...",
+                "⏳ Mencari nomor saba....",
+                "⏳ Mencari nomor sabar.....",
+            ]
 
-            number, country = await get_number_and_country(page)
-
-            if not number:
-                # --- LOADING DINAMIS (Menunggu status 'Just now' muncul) ---
-                delay_duration = 10.0 
-                update_interval = 0.5
+            start_time = time.time()
+            
+            # Loop selama waktu tunggu belum habis DAN nomor belum ditemukan
+            while (time.time() - start_time) < delay_duration and not number:
+                # Update status di Telegram
+                index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
+                current_status = loading_statuses[index]
+                tg_edit(user_id, msg_id, f"{current_status}\nRange: <code>{prefix}</code>")
                 
-                loading_statuses = [
-                    "⏳ mencoba lagi s.",
-                    "⏳ mencoba lagi sa..",
-                    "⏳ mencoba lagi sab...",
-                    "⏳ mencoba lagi saba....",
-                    "⏳ mencoba lagi sabar.....",
-                ]
-
-                start_time = time.time()
-                while (time.time() - start_time) < delay_duration:
-                    index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
-                    current_status = loading_statuses[index]
-                    
-                    tg_edit(user_id, msg_id, f"{current_status}\nRange: <code>{prefix}</code>")
-                    
-                    await asyncio.sleep(update_interval)
-
+                # Coba ekstrak nomor
                 number, country = await get_number_and_country(page)
-                # --- END LOADING DINAMIS ---
+                
+                if number:
+                    break # Keluar dari loop jika nomor ditemukan
+                
+                await asyncio.sleep(update_interval)
+
+            # --- AKHIR MODIFIKASI ---
 
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN ATAU STATUS BUKAN 'Just now'. SILAHKAN KLIK /start - GET NUMBER ULANG")
@@ -329,16 +331,24 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
             tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
 
-        except Exception as e:
-            print(f"[ERROR] Terjadi kesalahan pada Playwright/Web: {type(e).__name__} - {e}")
+        except PlaywrightTimeoutError as pte:
+            # Penanganan khusus untuk Timeout Playwright
+            error_type = pte.__class__.__name__
+            print(f"[ERROR PLAYWRIGHT TIMEOUT] Timeout pada interaksi web: {error_type} - {pte}")
             if msg_id:
-                tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
+                tg_edit(user_id, msg_id, f"❌ Timeout web. Web lambat atau elemen tidak ditemukan: {error_type}.")
+                
+        except Exception as e:
+            # Menangkap semua error fatal lainnya (termasuk koneksi terputus)
+            error_type = e.__class__.__name__
+            print(f"[ERROR FATAL DIBLOKIR] Proses Playwright Gagal Total: {error_type} - {e}")
+            if msg_id:
+                tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan fatal ({error_type}). Mohon coba lagi atau hubungi admin.")
     # --- END Lock Utama Playwright ---
 
-# --- MODIFIKASI: FUNGSI REFRESH LOOP BARU ---
 async def refresh_loop(page):
     """
-    Melakukan refresh halaman Playwright setiap 10 detik.
+    Melakukan refresh halaman Playwright setiap 10 detik dan memiliki penanganan error yang kuat.
     """
     REFRESH_INTERVAL = 10  # Detik
     DELAY_AFTER_ACTION = 2 # Detik (Untuk tunda setelah aktivitas/perintah)
@@ -356,18 +366,17 @@ async def refresh_loop(page):
             try:
                 print(f"[INFO REFRESH] Melakukan refresh halaman...")
                 # Perintah refresh
-                await page.reload(wait_until='domcontentloaded')
+                await page.reload(wait_until='domcontentloaded', timeout=15000)
                 print(f"[INFO REFRESH] Halaman berhasil di-refresh.")
 
             except PlaywrightTimeoutError:
-                print("[ERROR REFRESH] Timeout saat refresh halaman.")
+                print("[ERROR REFRESH] Timeout saat refresh halaman. Melanjutkan loop.")
             except Exception as e:
-                print(f"[ERROR REFRESH] Terjadi kesalahan saat refresh: {e}")
-            
+                error_type = e.__class__.__name__
+                print(f"[ERROR REFRESH FATAL DIBLOKIR] Gagal total saat refresh ({error_type}): {e}")
+                
             # Tambahkan jeda setelah aktivitas/perintah refresh
             await asyncio.sleep(DELAY_AFTER_ACTION)
-
-# --- AKHIR FUNGSI REFRESH LOOP BARU ---
 
 async def telegram_loop(page):
     offset = 0
@@ -376,7 +385,6 @@ async def telegram_loop(page):
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
 
-            # ... (Logika Telegram Bot tetap sama) ...
             if "message" in upd:
                 msg = upd["message"]
                 chat_id = msg["chat"]["id"]
@@ -581,7 +589,7 @@ def initialize_files():
             "NEPAL": "🇳🇵",
             "IVORY COAST": "🇨🇮",
             "GUINEA": "🇬🇳",
-            "CENTRAL AFRIKA": "🇨🇫", # Menggunakan nama lama sebagai default, harus disesuaikan jika ingin pakai nama penuh
+            "CENTRAL AFRIKA": "🇨🇫", 
             "TOGO": "🇹🇬",
             "TAJIKISTAN": "🇹🇯",
             "BENIN": "🇧🇯",
@@ -608,6 +616,7 @@ async def main():
 
     sms_process = None
     try:
+        # Menggunakan sys.executable untuk memastikan skrip dieksekusi dengan interpreter yang benar
         sms_process = subprocess.Popen([sys.executable, "sms.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True)
         print(f"[INFO] Started sms.py process with PID: {sms_process.pid}")
     except Exception as e:
@@ -632,9 +641,7 @@ async def main():
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
 
-            # --- MODIFIKASI UTAMA: Menjalankan dua loop secara paralel ---
-            # 1. Telegram Loop (Merespon user)
-            # 2. Refresh Loop (Refresh halaman Playwright)
+            # --- MENJALANKAN DUA LOOP SECARA PARALEL ---
             await asyncio.gather(
                 telegram_loop(page),
                 refresh_loop(page)
