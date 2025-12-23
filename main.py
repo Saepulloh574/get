@@ -3,13 +3,15 @@ import json
 import os
 import requests
 import re
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
 import subprocess
 import sys
 import time
 
 # --- MODIFIKASI: ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
+# Digunakan untuk memastikan hanya satu tugas (telegram_loop atau refresh_loop) 
+# yang mengakses Playwright pada satu waktu.
 playwright_lock = asyncio.Lock()
 # ---------------------------------------------------------
 
@@ -253,6 +255,9 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang mengirim range ke web...\nRange: <code>{prefix}</code>")
 
             # --- Interaksi Playwright ---
+            # Tambahkan jeda 2 detik sesuai permintaan sebelum interaksi
+            await asyncio.sleep(2) 
+            
             await page.wait_for_selector('input[name="numberrange"]', timeout=10000)
             await page.fill('input[name="numberrange"]', prefix)
             await asyncio.sleep(0.5)
@@ -264,7 +269,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             try:
                 # Menunggu setidaknya satu baris baru muncul di dalam tbody
                 await page.wait_for_selector("tbody tr", timeout=15000)
-            except Exception:
+            except PlaywrightTimeoutError:
                 print(f"[INFO] Timeout menunggu hasil AJAX setelah klik getNumberBtn untuk range {prefix}. Melanjutkan...")
                 pass
             
@@ -274,7 +279,6 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
             if not number:
                 # --- LOADING DINAMIS (Menunggu status 'Just now' muncul) ---
-                # Durasi diperpanjang karena kita menunggu status 'Just now' yang butuh waktu.
                 delay_duration = 10.0 
                 update_interval = 0.5
                 
@@ -331,6 +335,40 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan saat proses web. Cek log bot: {type(e).__name__}")
     # --- END Lock Utama Playwright ---
 
+# --- MODIFIKASI: FUNGSI REFRESH LOOP BARU ---
+async def refresh_loop(page):
+    """
+    Melakukan refresh halaman Playwright setiap 10 detik.
+    """
+    REFRESH_INTERVAL = 10  # Detik
+    DELAY_AFTER_ACTION = 2 # Detik (Untuk tunda setelah aktivitas/perintah)
+
+    while True:
+        await asyncio.sleep(REFRESH_INTERVAL)
+        
+        # Cek apakah lock sedang digunakan oleh tugas lain (misalnya process_user_input)
+        if playwright_lock.locked():
+            print("[INFO REFRESH] Playwright sedang digunakan, melewati siklus refresh.")
+            continue
+            
+        # Gunakan lock saat akan mengakses Playwright
+        async with playwright_lock:
+            try:
+                print(f"[INFO REFRESH] Melakukan refresh halaman...")
+                # Perintah refresh
+                await page.reload(wait_until='domcontentloaded')
+                print(f"[INFO REFRESH] Halaman berhasil di-refresh.")
+
+            except PlaywrightTimeoutError:
+                print("[ERROR REFRESH] Timeout saat refresh halaman.")
+            except Exception as e:
+                print(f"[ERROR REFRESH] Terjadi kesalahan saat refresh: {e}")
+            
+            # Tambahkan jeda setelah aktivitas/perintah refresh
+            await asyncio.sleep(DELAY_AFTER_ACTION)
+
+# --- AKHIR FUNGSI REFRESH LOOP BARU ---
+
 async def telegram_loop(page):
     offset = 0
     while True:
@@ -338,6 +376,7 @@ async def telegram_loop(page):
         for upd in data.get("result", []):
             offset = upd["update_id"] + 1
 
+            # ... (Logika Telegram Bot tetap sama) ...
             if "message" in upd:
                 msg = upd["message"]
                 chat_id = msg["chat"]["id"]
@@ -454,6 +493,7 @@ async def telegram_loop(page):
                         
                         continue
 
+                    # Gunakan await untuk memproses input
                     await process_user_input(page, user_id, prefix, msg_id_to_edit)
                     continue
 
@@ -514,6 +554,7 @@ async def telegram_loop(page):
 
                     tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
 
+                    # Gunakan await untuk memproses input
                     await process_user_input(page, user_id, prefix, menu_msg_id)
                     continue
 
@@ -591,7 +632,14 @@ async def main():
             page = context.pages[0]
             print("[OK] Connected to existing Chrome via CDP on port 9222")
 
-            await telegram_loop(page)
+            # --- MODIFIKASI UTAMA: Menjalankan dua loop secara paralel ---
+            # 1. Telegram Loop (Merespon user)
+            # 2. Refresh Loop (Refresh halaman Playwright)
+            await asyncio.gather(
+                telegram_loop(page),
+                refresh_loop(page)
+            )
+            # --- AKHIR MODIFIKASI UTAMA ---
 
     except Exception as e:
         print(f"[FATAL ERROR] An unexpected error occurred: {e}")
