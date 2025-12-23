@@ -279,10 +279,11 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 update_interval = 0.5
                 
                 loading_statuses = [
-                    "⏳ Nomor belum muncul mencoba lagi.",
-                    "⏳ Nomor belum muncul mencoba lagi..",
-                    "⏳ Nomor belum muncul mencoba lagi...",
-                    "⏳ Nomor belum muncul mencoba lagi....",
+                    "⏳ muncul mencoba lagi s.",
+                    "⏳ muncul mencoba lagi sa..",
+                    "⏳ muncul mencoba lagi sab...",
+                    "⏳ muncul mencoba lagi saba....",
+                    "⏳ muncul mencoba lagi sabar.....",
                 ]
 
                 start_time = time.time()
