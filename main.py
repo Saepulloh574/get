@@ -266,8 +266,11 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
             await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=30000)
             
+            # --- PERUBAHAN UTAMA: Tambahkan Jeda 3 Detik di sini ---
+            tg_edit(user_id, msg_id, f"✅ Halaman dimuat. Menunggu 3 detik dan mengklik 'Get number'...\nRange: <code>{prefix}</code>")
+            await asyncio.sleep(3) 
+
             # 2. TUNGGU TOMBOL SIAP DAN KLIK
-            tg_edit(user_id, msg_id, f"✅ Halaman dimuat. Mengklik 'Get number'...\nRange: <code>{prefix}</code>")
             await page.wait_for_selector("#getNumberBtn", state='visible', timeout=15000)
             await page.click("#getNumberBtn", force=True)
             
@@ -520,6 +523,7 @@ async def main():
     try:
         async with async_playwright() as p:
             try:
+                # Menghubungkan ke instance Chrome yang ada (harus dijalankan dengan --remote-debugging-port=9222)
                 browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             except Exception as e:
                 print(f"[ERROR] Gagal koneksi ke Chrome CDP: {e}")
