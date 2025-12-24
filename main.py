@@ -313,8 +313,8 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 f"📞 Number  : <code>{number}</code>\n"
                 f"{emoji} COUNTRY : {country}\n"
                 f"🏷️ Range   : <code>{prefix}</code>\n\n"
-                "<b>🤖 Nomor telah dimasukkan ke daftar tunggu otomatis.</b>\n"
-                "<b>OTP akan dikirimkan ke chat ini Atau Check OTP grup.</b>"
+                "<b>🤖 Number available please use.</b>\n"
+                "<b>Waiting for OTP....</b>"
             )
 
             inline_kb = {
