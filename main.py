@@ -13,6 +13,51 @@ import time
 playwright_lock = asyncio.Lock()
 # ----------------------------------------------
 
+# --- DATA GLOBAL EMOJI NEGARA (DIGABUNGKAN) ---
+GLOBAL_COUNTRY_EMOJI = {
+  "AFGHANISTAN": "🇦🇫", "ALBANIA": "🇦🇱", "ALGERIA": "🇩🇿", "ANDORRA": "🇦🇩", "ANGOLA": "🇦🇴",
+  "ANTIGUA AND BARBUDA": "🇦🇬", "ARGENTINA": "🇦🇷", "ARMENIA": "🇦🇲", "AUSTRALIA": "🇦🇺", "AUSTRIA": "🇦🇹",
+  "AZERBAIJAN": "🇦🇿", "BAHAMAS": "🇧🇸", "BAHRAIN": "🇧🇭", "BANGLADESH": "🇧🇩", "BARBADOS": "🇧🇧",
+  "BELARUS": "🇧🇾", "BELGIUM": "🇧🇪", "BELIZE": "🇧🇿", "BENIN": "🇧🇯", "BHUTAN": "🇧🇹",
+  "BOLIVIA": "🇧🇴", "BOSNIA AND HERZEGOVINA": "🇧🇦", "BOTSWANA": "🇧🇼", "BRAZIL": "🇧🇷", "BRUNEI": "🇧🇳",
+  "BULGARIA": "🇧🇬", "BURKINA FASO": "🇧🇫", "BURUNDI": "🇧🇮", "CAMBODIA": "🇰🇭", "CAMEROON": "🇨🇲",
+  "CANADA": "🇨🇦", "CAPE VERDE": "🇨🇻", "CENTRAL AFRICAN REPUBLIC": "🇨🇫", "CHAD": "🇹🇩", "CHILE": "🇨🇱",
+  "CHINA": "🇨🇳", "COLOMBIA": "🇨🇴", "COMOROS": "🇰🇲", "CONGO": "🇨🇬", "COSTA RICA": "🇨🇷",
+  "CROATIA": "🇭🇷", "CUBA": "🇨🇺", "CYPRUS": "🇨🇾", "CZECH REPUBLIC": "🇨🇿", "IVORY COAST": "🇨🇮",
+  "DENMARK": "🇩🇰", "DJIBOUTI": "🇩🇯", "DOMINICA": "🇩🇲", "DOMINICAN REPUBLIC": "🇩🇴", "ECUADOR": "🇪🇨",
+  "EGYPT": "🇪🇬", "EL SALVADOR": "🇸🇻", "EQUATORIAL GUINEA": "🇬🇶", "ERITREA": "🇪🇷", "ESTONIA": "🇪🇪",
+  "ESWATINI": "🇸🇿", "ETHIOPIA": "🇪🇹", "FIJI": "🇫🇯", "FINLAND": "🇫🇮", "FRANCE": "🇫🇷",
+  "GABON": "🇬🇦", "GAMBIA": "🇬🇲", "GEORGIA": "🇬🇪", "GERMANY": "🇩🇪", "GHANA": "🇬🇭",
+  "GREECE": "🇬🇷", "GRENADA": "🇬🇩", "GUATEMALA": "🇬🇹", "GUINEA": "🇬🇳", "GUINEA-BISSAU": "🇬🇼",
+  "GUYANA": "🇬🇾", "HAITI": "🇭🇹", "HONDURAS": "🇭🇳", "HUNGARY": "🇭🇺", "ICELAND": "🇮🇸",
+  "INDIA": "🇮🇳", "INDONESIA": "🇮🇩", "IRAN": "🇮🇷", "IRAQ": "🇮🇶", "IRELAND": "🇮🇪",
+  "ISRAEL": "🇮🇱", "ITALY": "🇮🇹", "JAMAICA": "🇯🇲", "JAPAN": "🇯🇵", "JORDAN": "🇯🇴",
+  "KAZAKHSTAN": "🇰🇿", "KENYA": "🇰🇪", "KIRIBATI": "🇰🇮", "KUWAIT": "🇰🇼", "KYRGYZSTAN": "🇰🇬",
+  "LAOS": "🇱🇦", "LATVIA": "🇱🇻", "LEBANON": "🇱🇧", "LESOTHO": "🇱🇸", "LIBERIA": "🇱🇷",
+  "LIBYA": "🇱🇾", "LIECHTENSTEIN": "🇱🇮", "LITHUANIA": "🇱🇹", "LUXEMBOURG": "🇱🇺", "MADAGASCAR": "🇲🇬",
+  "MALAWI": "🇲🇼", "MALAYSIA": "🇲🇾", "MALDIVES": "🇲🇻", "MALI": "🇲🇱", "MALTA": "🇲🇹",
+  "MARSHALL ISLANDS": "🇲🇭", "MAURITANIA": "🇲🇷", "MAURITIUS": "🇲🇺", "MEXICO": "🇲🇽", "MICRONESIA": "🇫🇲",
+  "MOLDOVA": "🇲🇩", "MONACO": "🇲🇨", "MONGOLIA": "🇲🇳", "MONTENEGRO": "🇲🇪", "MOROCCO": "🇲🇦",
+  "MOZAMBIQUE": "🇲🇿", "MYANMAR": "🇲🇲", "NAMIBIA": "🇳🇦", "NAURU": "🇳🇷", "NEPAL": "🇳🇵",
+  "NETHERLANDS": "🇳🇱", "NEW ZEALAND": "🇳🇿", "NICARAGUA": "🇳🇮", "NIGER": "🇳🇪", "NIGERIA": "🇳🇬",
+  "NORTH KOREA": "🇰🇵", "NORTH MACEDONIA": "🇲🇰", "NORWAY": "🇳🇴", "OMAN": "🇴🇲", "PAKISTAN": "🇵🇰",
+  "PALAU": "🇵🇼", "PALESTINE": "🇵🇸", "PANAMA": "🇵🇦", "PAPUA NEW GUINEA": "🇵🇬", "PARAGUAY": "🇵🇾",
+  "PERU": "🇵🇪", "PHILIPPINES": "🇵🇭", "POLAND": "🇵🇱", "PORTUGAL": "🇵🇹", "QATAR": "🇶🇦",
+  "ROMANIA": "🇷🇴", "RUSSIA": "🇷🇺", "RWANDA": "🇷🇼", "SAINT KITTS AND NEVIS": "🇰🇳", "SAINT LUCIA": "🇱🇨",
+  "SAINT VINCENT AND THE GRENADINES": "🇻🇨", "SAMOA": "🇼🇸", "SAN MARINO": "🇸🇲", "SAO TOME AND PRINCIPE": "🇸🇹",
+  "SAUDI ARABIA": "🇸🇦", "SENEGAL": "🇸🇳", "SERBIA": "🇷🇸", "SEYCHELLES": "🇸🇨", "SIERRA LEONE": "🇸🇱",
+  "SINGAPORE": "🇸🇬", "SLOVAKIA": "🇸🇰", "SLOVENIA": "🇸🇮", "SOLOMON ISLANDS": "🇸🇧", "SOMALIA": "🇸🇴",
+  "SOUTH AFRICA": "🇿🇦", "SOUTH KOREA": "🇰🇷", "SOUTH SUDAN": "🇸🇸", "SPAIN": "🇪🇸", "SRI LANKA": "🇱🇰",
+  "SUDAN": "🇸🇩", "SURINAME": "🇸🇷", "SWEDEN": "🇸🇪", "SWITZERLAND": "🇨🇭", "SYRIA": "🇸🇾",
+  "TAJIKISTAN": "🇹🇯", "TANZANIA": "🇹🇿", "THAILAND": "🇹🇭", "TIMOR-LESTE": "🇹🇱", "TOGO": "🇹🇬",
+  "TONGA": "🇹🇴", "TRINIDAD AND TOBAGO": "🇹🇹", "TUNISIA": "🇹🇳", "TURKEY": "🇹🇷", "TURKMENISTAN": "🇹🇲",
+  "TUVALU": "🇹🇻", "UGANDA": "🇺🇬", "UKRAINE": "🇺🇦", "UNITED ARAB EMIRATES": "🇦🇪", "UNITED KINGDOM": "🇬🇧",
+  "UNITED STATES": "🇺🇸", "URUGUAY": "🇺🇾", "UZBEKISTAN": "🇺🇿", "VANUATU": "🇻🇺", "VATICAN CITY": "🇻🇦",
+  "VENEZUELA": "🇻🇪", "VIETNAM": "🇻🇳", "YEMEN": "🇾🇪", "ZAMBIA": "🇿🇲", "ZIMBABWE": "🇿🇼", "UNKNOWN": "🗺️" 
+}
+# ----------------------------------------------
+
+
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
@@ -30,32 +75,22 @@ CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
-COUNTRY_EMOJI_FILE = "country.json"
+COUNTRY_EMOJI_FILE = "country.json" # Tetap dideklarasikan tapi tidak digunakan lagi untuk loading
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g" 
 
 verified_users = set()
-# waiting_range Dihapus
 waiting_admin_input = set()
 pending_message = {}
 sent_numbers = set()
 last_used_range = {}
-GLOBAL_COUNTRY_EMOJI = {}
+# GLOBAL_COUNTRY_EMOJI dipindahkan ke atas dan diisi
 
 
 # --- FUNGSI UTILITAS MANAJEMEN FILE ---
 
-def load_country_emojis():
-    """Memuat data emoji negara dari country.json."""
-    if os.path.exists(COUNTRY_EMOJI_FILE):
-        try:
-            with open(COUNTRY_EMOJI_FILE, "r", encoding='utf-8') as f:
-                return json.load(f)
-        except Exception as e:
-            print(f"[ERROR] Gagal memuat {COUNTRY_EMOJI_FILE}: {e}")
-            return {}
-    return {}
+# load_country_emojis() dihapus karena data sudah di-hardcode
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -96,6 +131,7 @@ def generate_inline_keyboard(ranges):
     keyboard = []
     current_row = []
     for item in ranges:
+        # Menggunakan emoji dari data inline_ranges yang sudah disimpan
         text = f"{item['country']} {item['emoji']}"
         callback_data = f"select_range:{item['range']}"
         current_row.append({"text": text, "callback_data": callback_data})
@@ -106,8 +142,6 @@ def generate_inline_keyboard(ranges):
 
     if current_row:
         keyboard.append(current_row)
-    
-    # Opsi Input Manual Range telah dihapus
     
     return {"inline_keyboard": keyboard}
 
@@ -139,6 +173,7 @@ def normalize_number(number):
 
 
 # --- FUNGSI UTILITAS TELEGRAM API ---
+# ... (Fungsi-fungsi ini tidak berubah) ...
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -310,7 +345,8 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             add_to_wait_list(number, user_id)
             last_used_range[user_id] = prefix 
 
-            emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️")
+            # Menggunakan GLOBAL_COUNTRY_EMOJI yang sudah di-hardcode
+            emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️") 
             msg = (
                 "✅ The number is ready\n\n"
                 f"📞 Number  : <code>{number}</code>\n"
@@ -381,13 +417,14 @@ async def telegram_loop(page):
                 if user_id in waiting_admin_input:
                     waiting_admin_input.remove(user_id)
                     new_ranges = []
-                    global GLOBAL_COUNTRY_EMOJI
-                    GLOBAL_COUNTRY_EMOJI = load_country_emojis()
+                    # GLOBAL_COUNTRY_EMOJI sudah tersedia secara global
                     for line in text.strip().split('\n'):
                         if ' > ' in line:
                             parts = line.split(' > ', 1)
                             range_prefix = parts[0].strip()
-                            country_name = parts[1].strip().upper()
+                            # Ubah menjadi UPPERCASE untuk mencocokkan key GLOBAL_COUNTRY_EMOJI
+                            country_name = parts[1].strip().upper() 
+                            # Menggunakan GLOBAL_COUNTRY_EMOJI langsung
                             emoji = GLOBAL_COUNTRY_EMOJI.get(country_name, "🗺️") 
                             new_ranges.append({"range": range_prefix, "country": country_name, "emoji": emoji})
                     prompt_msg_id = pending_message.pop(user_id, None)
@@ -411,9 +448,6 @@ async def telegram_loop(page):
                         msg_text = (f"Halo {mention} 👋\nHarap gabung kedua grup di bawah untuk verifikasi:")
                         tg_send(user_id, msg_text, kb)
                     continue
-
-                # Logika Input Range Manual Dihapus
-                # Semua input teks dari pengguna kini diabaikan kecuali command atau input Admin
 
             if "callback_query" in upd:
                 cq = upd["callback_query"]
@@ -445,9 +479,6 @@ async def telegram_loop(page):
                         tg_edit(chat_id, menu_msg_id, "❌ Belum ada Range yang tersedia. Silahkan hubungi Admin untuk menambah Range.")
                     continue
                 
-                # Callback Manual Range Dihapus
-                # if data_cb == "manual_range": ...
-
                 if data_cb.startswith("select_range:"):
                     if user_id not in verified_users:
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
@@ -488,18 +519,10 @@ def initialize_files():
     with open(WAIT_FILE, "w") as f:
         f.write("[]")
     
-    if not os.path.exists(COUNTRY_EMOJI_FILE):
-        default_emojis = {
-            "NEPAL": "🇳🇵", "IVORY COAST": "🇨🇮", "GUINEA": "🇬🇳", "CENTRAL AFRIKA": "🇨🇫", 
-            "TOGO": "🇹🇬", "TAJIKISTAN": "🇹🇯", "BENIN": "🇧🇯", "SIERRA LEONE": "🇸🇱",
-            "MADAGASCAR": "🇲🇬", "AFGANISTAN": "🇦🇫", "UNKNOWN": "🗺️"
-        }
-        try:
-            with open(COUNTRY_EMOJI_FILE, "w", encoding='utf-8') as f:
-                json.dump(default_emojis, f, indent=2)
-            print(f"[INFO] File {COUNTRY_EMOJI_FILE} dibuat dengan emoji default.")
-        except Exception as e:
-            print(f"[ERROR] Gagal menulis {COUNTRY_EMOJI_FILE}: {e}")
+    # HAPUS BAGIAN PEMBUATAN/PEMUATAN country.json
+    if os.path.exists(COUNTRY_EMOJI_FILE):
+        print(f"[INFO] Menghapus file {COUNTRY_EMOJI_FILE} yang sudah tidak terpakai.")
+        os.remove(COUNTRY_EMOJI_FILE)
 
 
 async def main():
@@ -509,9 +532,8 @@ async def main():
     print("[INFO] Membersihkan pending updates dari Telegram API...")
     clear_pending_updates()
     
-    global GLOBAL_COUNTRY_EMOJI
-    GLOBAL_COUNTRY_EMOJI = load_country_emojis()
-    print(f"[INFO] Memuat {len(GLOBAL_COUNTRY_EMOJI)} emoji negara.")
+    # GLOBAL_COUNTRY_EMOJI sudah diisi di awal, tidak perlu memuat
+    print(f"[INFO] Memuat {len(GLOBAL_COUNTRY_EMOJI)} emoji negara dari hardcode.")
 
     sms_process = None
     try:
