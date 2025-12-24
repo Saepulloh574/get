@@ -75,7 +75,7 @@ CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
-COUNTRY_EMOJI_FILE = "country.json" # Tetap dideklarasikan tapi tidak digunakan lagi untuk loading
+COUNTRY_EMOJI_FILE = "country.json" 
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g" 
@@ -89,8 +89,6 @@ last_used_range = {}
 
 
 # --- FUNGSI UTILITAS MANAJEMEN FILE ---
-
-# load_country_emojis() dihapus karena data sudah di-hardcode
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -173,7 +171,6 @@ def normalize_number(number):
 
 
 # --- FUNGSI UTILITAS TELEGRAM API ---
-# ... (Fungsi-fungsi ini tidak berubah) ...
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -305,28 +302,38 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, msg_id, f"✅ Halaman dimuat. Menunggu 3 detik dan mengklik 'Get number'...\nRange: <code>{prefix}</code>")
             await asyncio.sleep(3) 
 
-            # 2. TUNGGU TOMBOL SIAP DAN KLIK
+            # 2. TUNGGU TOMBOL SIAP DAN KLIK (Awal)
             await page.wait_for_selector("#getNumberBtn", state='visible', timeout=15000)
             await page.click("#getNumberBtn", force=True)
             
-            # 3. TUNGGU PEMUATAN JARINGAN & PENCARIAN
+            # 3. TUNGGU PEMUATAN JARINGAN & PENCARIAN (Awal)
             await asyncio.sleep(1) 
             tg_edit(user_id, msg_id, f"🔄 Menunggu nomor baru dari server...\nRange: <code>{prefix}</code>")
             await page.wait_for_load_state('networkidle', timeout=15000) 
             await asyncio.sleep(2) 
 
             # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
-            delay_duration_round_1 = 5.0
-            delay_duration_round_2 = 5.0
+            delay_duration_round_1 = 5.0 # Durasi pencarian Siklus 1
+            delay_duration_round_2 = 5.0 # Durasi pencarian Siklus 2
             update_interval = 1.0
             number = None
             loading_statuses = ["⏳ Mencari nomor .", "⏳ Mencari nomor ..", "⏳ Mencari nomor ..."]
             
             for round_num, duration in enumerate([delay_duration_round_1, delay_duration_round_2]):
+                
+                # --- LOGIKA TAMBAHAN: KLIK TOMBOL LAGI PADA SIKLUS 2 JIKA SIKLUS 1 GAGAL ---
+                if round_num == 1 and not number: 
+                    tg_edit(user_id, msg_id, f"🔄 Nomor belum ditemukan. Mengklik 'Get number' lagi (Siklus 2)...\nRange: <code>{prefix}</code>")
+                    await page.click("#getNumberBtn", force=True)
+                    await asyncio.sleep(1) # Tunggu sebentar setelah klik
+                    await page.wait_for_load_state('networkidle', timeout=15000)
+                    await asyncio.sleep(2) # Tunggu hasil muncul
+                # -------------------------------------------------------------------------
+
                 start_time = time.time()
                 tg_edit(user_id, msg_id, f"⏳ Mencari nomor (Siklus {round_num + 1}/2)...\nRange: <code>{prefix}</code>")
                 
-                while (time.time() - start_time) < duration and not number:
+                while (time.time() - start_time) < duration:
                     index = int((time.time() - start_time) / update_interval) % len(loading_statuses)
                     current_status = loading_statuses[index]
                     tg_edit(user_id, msg_id, f"{current_status} (Siklus {round_num + 1}/2)\nRange: <code>{prefix}</code>")
@@ -334,6 +341,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                     number, country = await get_number_and_country(page)
                     if number: break
                     await asyncio.sleep(update_interval)
+                
                 if number: break
 
             if not number:
@@ -377,7 +385,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
 
 # --- LOOP UTAMA TELEGRAM ---
-
+# ... (Sisanya dari fungsi telegram_loop, initialize_files, dan main tetap sama) ...
 async def telegram_loop(page):
     offset = 0
     while True:
@@ -501,9 +509,6 @@ async def telegram_loop(page):
                     continue
                 
         await asyncio.sleep(0.5)
-
-
-# --- SETUP DAN MAIN ---
 
 def initialize_files():
     files = {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]"}
