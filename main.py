@@ -57,8 +57,8 @@ GLOBAL_COUNTRY_EMOJI = {
 }
 # ----------------------------------------------
 
-# --- KONFIGURASI PROGRESS BAR GLOBAL (PERBAIKAN ERROR) ---
-MAX_BARS = 15
+# --- KONFIGURASI PROGRESS BAR GLOBAL (DIUBAH) ---
+MAX_BARS = 12 # MODIFIKASI: Diubah dari 15 menjadi 12
 BAR_EMOJI = "◽"
 
 def get_progress_message(current_step, total_steps, prefix_range):
@@ -66,10 +66,11 @@ def get_progress_message(current_step, total_steps, prefix_range):
     bar_count = (current_step % MAX_BARS) + 1
     progress_bar = BAR_EMOJI * bar_count
     
+    # MODIFIKASI: Menambahkan tag <code> pada bagian tertentu
     return (
-    f"Looking for your number, please be patient, sir.\n"
+    f"<code>Looking for your number, please be patient, sir.</code>\n"
     f"<blockquote>Range: <code>{prefix_range}</code></blockquote>\n"
-    f"Load: {progress_bar}"
+    f"<code>Load:</code> {progress_bar}"
 )
 # ---------------------------------------------------------
 
