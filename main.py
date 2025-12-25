@@ -105,7 +105,7 @@ sent_numbers = set()
 last_used_range = {}
 
 
-# --- FUNGSI UTILITAS MANAJEMEN FILE (Tidak ada perubahan) ---
+# --- FUNGSI UTILITAS MANAJEMEN FILE ---
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -188,7 +188,7 @@ def normalize_number(number):
     return normalized_number
 
 
-# --- FUNGSI UTILITAS TELEGRAM API (Tidak ada perubahan) ---
+# --- FUNGSI UTILITAS TELEGRAM API (Termasuk tg_delete) ---
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -215,6 +215,18 @@ def tg_edit(chat_id, message_id, text, reply_markup=None):
                  print(f"[ERROR EDIT] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
     except Exception as e:
         print(f"[ERROR EDIT REQUEST] {e}")
+
+def tg_delete(chat_id, message_id):
+    """Menghapus pesan berdasarkan chat_id dan message_id."""
+    data = {"chat_id": chat_id, "message_id": message_id}
+    try:
+        r = requests.post(f"{API}/deleteMessage", json=data).json()
+        if not r.get("ok"):
+             # Menghilangkan logging jika pesan sudah terhapus
+             if "message to delete not found" not in r.get("description", ""):
+                 print(f"[ERROR DELETE] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
+    except Exception as e:
+        print(f"[ERROR DELETE REQUEST] {e}")
 
 def tg_get_updates(offset):
     try:
@@ -255,7 +267,7 @@ def clear_pending_updates():
         print(f"[ERROR CLEAR UPDATES] Gagal membersihkan pending updates: {e}")
 
 
-# --- FUNGSI PLAYWRIGHT ASYNC (get_number_and_country tidak diubah) ---
+# --- FUNGSI PLAYWRIGHT ASYNC ---
 
 async def get_number_and_country(page):
     """Mengambil nomor terbaru dari tabel, jika belum di cache dan status belum final."""
@@ -287,7 +299,6 @@ async def get_number_and_country(page):
         return None, None
 
 
-# MODIFIKASI: Menerima 'browser'
 async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
     """Memproses permintaan Get Number menggunakan Playwright dengan tab baru untuk setiap permintaan."""
     global GLOBAL_COUNTRY_EMOJI 
@@ -594,11 +605,12 @@ async def telegram_loop(browser):
                         tg_edit(chat_id, menu_msg_id, "❌ Tidak ada range terakhir yang tersimpan. Silakan pilih range baru melalui /start.")
                         return
                     
-                    current_step = 0
-                    message = get_progress_message(current_step, 0, prefix)
-                    tg_edit(chat_id, menu_msg_id, message)
+                    # MODIFIKASI: HAPUS PESAN LAMA
+                    tg_delete(chat_id, menu_msg_id)
                     
-                    await process_user_input(browser, user_id, prefix, menu_msg_id) 
+                    # Panggil process_user_input TANPA message_id_to_edit
+                    # process_user_input akan secara otomatis membuat pesan baru
+                    await process_user_input(browser, user_id, prefix) 
                     continue
                 
         await asyncio.sleep(0.5)
