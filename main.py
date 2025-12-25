@@ -15,6 +15,7 @@ playwright_lock = asyncio.Lock()
 
 # --- DATA GLOBAL EMOJI NEGARA (DIGABUNGKAN) ---
 GLOBAL_COUNTRY_EMOJI = {
+# ... (data emoji negara, tidak diubah) ...
   "AFGHANISTAN": "🇦🇫", "ALBANIA": "🇦🇱", "ALGERIA": "🇩🇿", "ANDORRA": "🇦🇩", "ANGOLA": "🇦🇴",
   "ANTIGUA AND BARBUDA": "🇦🇬", "ARGENTINA": "🇦🇷", "ARMENIA": "🇦🇲", "AUSTRALIA": "🇦🇺", "AUSTRIA": "🇦🇹",
   "AZERBAIJAN": "🇦🇿", "BAHAMAS": "🇧🇸", "BAHRAIN": "🇧🇭", "BANGLADESH": "🇧🇩", "BARBADOS": "🇧🇧",
@@ -57,6 +58,23 @@ GLOBAL_COUNTRY_EMOJI = {
 }
 # ----------------------------------------------
 
+# --- KONFIGURASI PROGRESS BAR GLOBAL (PERBAIKAN ERROR) ---
+MAX_BARS = 15
+BAR_EMOJI = "◼"
+
+def get_progress_message(current_step, total_steps, prefix_range):
+    """Menghasilkan pesan progress bar yang berulang, dapat diakses secara global."""
+    # total_steps tidak dipakai, hanya untuk kompatibilitas jika nanti butuh
+    bar_count = (current_step % MAX_BARS) + 1
+    progress_bar = BAR_EMOJI * bar_count
+    
+    return (
+        "Looking for your number\n"
+        f"Range: <code>{prefix_range}</code>\n"
+        f"Load:{progress_bar}"
+    )
+# ---------------------------------------------------------
+
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -86,10 +104,9 @@ manual_range_input = set()
 pending_message = {}
 sent_numbers = set()
 last_used_range = {}
-# GLOBAL_COUNTRY_EMOJI dipindahkan ke atas dan diisi
 
 
-# --- FUNGSI UTILITAS MANAJEMEN FILE ---
+# --- FUNGSI UTILITAS MANAJEMEN FILE (Tidak ada perubahan) ---
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -130,7 +147,6 @@ def generate_inline_keyboard(ranges):
     keyboard = []
     current_row = []
     for item in ranges:
-        # Menggunakan emoji dari data inline_ranges yang sudah disimpan
         text = f"{item['country']} {item['emoji']}"
         callback_data = f"select_range:{item['range']}"
         current_row.append({"text": text, "callback_data": callback_data})
@@ -142,9 +158,7 @@ def generate_inline_keyboard(ranges):
     if current_row:
         keyboard.append(current_row)
     
-    # --- MODIFIKASI: Tambahkan tombol Manual Range di baris paling bawah ---
     keyboard.append([{"text": "✍️ Input Manual Range", "callback_data": "manual_range"}])
-    # ----------------------------------------------------------------------
     
     return {"inline_keyboard": keyboard}
 
@@ -175,7 +189,7 @@ def normalize_number(number):
     return normalized_number
 
 
-# --- FUNGSI UTILITAS TELEGRAM API ---
+# --- FUNGSI UTILITAS TELEGRAM API (Tidak ada perubahan) ---
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -242,7 +256,7 @@ def clear_pending_updates():
         print(f"[ERROR CLEAR UPDATES] Gagal membersihkan pending updates: {e}")
 
 
-# --- FUNGSI PLAYWRIGHT ASYNC ---
+# --- FUNGSI PLAYWRIGHT ASYNC (get_number_and_country tidak diubah) ---
 
 async def get_number_and_country(page):
     """Mengambil nomor terbaru dari tabel, jika belum di cache dan status belum final."""
@@ -282,23 +296,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
     page = None # Inisiasi page di luar try
 
-    # --- KONFIGURASI PROGRESS BAR BARU ---
-    MAX_BARS = 15
-    BAR_EMOJI = "◼"
-    
-    def get_progress_message(current_step, total_steps, prefix_range):
-        """Menghasilkan pesan progress bar yang berulang."""
-        bar_count = (current_step % MAX_BARS) + 1
-        progress_bar = BAR_EMOJI * bar_count
-        
-        # Pesan selalu menampilkan "Looking for your number"
-        return (
-            "Looking for your number\n"
-            f"Range: <code>{prefix_range}</code>\n"
-            f"Load:{progress_bar}"
-        )
-
-    # -------------------------------------
+    # Catatan: Fungsi get_progress_message sekarang di scope global
 
     # --- Feedback Antrian ---
     if playwright_lock.locked():
@@ -426,7 +424,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                 print(f"[DEBUG] Tab untuk user {user_id} ditutup")
 
 
-# --- LOOP UTAMA TELEGRAM ---
+# --- LOOP UTAMA TELEGRAM (Diperbaiki: Panggilan get_progress_message) ---
 async def telegram_loop(browser):
     offset = 0
     while True:
@@ -494,10 +492,11 @@ async def telegram_loop(browser):
                     if re.match(r"^\+?\d{3,15}[Xx*#]+$", prefix, re.IGNORECASE):
                         # Edit pesan yang sudah ada (jika ada, dari callback 'manual_range')
                         if menu_msg_id:
-                            tg_edit(chat_id, menu_msg_id, f"<b>Manual Range</b>\n\nRange diterima: <code>{prefix}</code>\n⏳ Sedang memproses...")
+                            # Menggunakan fungsi global yang sudah diperbaiki
+                            tg_edit(chat_id, menu_msg_id, get_progress_message(0, 0, prefix)) 
                         else:
                             # Jika tidak ada message_id yang tersimpan, kirim pesan baru
-                            menu_msg_id = tg_send(chat_id, f"<b>Manual Range</b>\n\nRange diterima: <code>{prefix}</code>\n⏳ Sedang memproses...")
+                            menu_msg_id = tg_send(chat_id, get_progress_message(0, 0, prefix))
 
                         # Lanjutkan ke proses utama Playwright
                         await process_user_input(browser, user_id, prefix, menu_msg_id)
