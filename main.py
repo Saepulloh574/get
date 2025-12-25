@@ -60,7 +60,7 @@ GLOBAL_COUNTRY_EMOJI = {
 
 # --- KONFIGURASI PROGRESS BAR GLOBAL (PERBAIKAN ERROR) ---
 MAX_BARS = 15
-BAR_EMOJI = "⬜"
+BAR_EMOJI = "◽"
 
 def get_progress_message(current_step, total_steps, prefix_range):
     """Menghasilkan pesan progress bar yang berulang, dapat diakses secara global."""
