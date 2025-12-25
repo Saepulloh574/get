@@ -360,7 +360,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             delay_duration_round_2 = 5.0 # Durasi pencarian Siklus 2
             
             # MODIFIKASI UTAMA: Update Progress Bar setiap 0.5 detik
-            progress_update_interval = 0.5 
+            progress_update_interval = 0.1 
             check_number_interval = 1.0 # Interval pengecekan nomor Playwright
             
             number = None
