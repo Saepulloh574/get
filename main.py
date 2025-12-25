@@ -8,13 +8,15 @@ from dotenv import load_dotenv
 import subprocess
 import sys
 import time
-import math # Import untuk perhitungan progress bar
+import math 
+# ... (Import lainnya tidak diubah) ...
 
 # --- ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
 playwright_lock = asyncio.Lock()
 # ----------------------------------------------
 
 # --- DATA GLOBAL EMOJI NEGARA (DIGABUNGKAN) ---
+# ... (GLOBAL_COUNTRY_EMOJI tidak diubah) ...
 GLOBAL_COUNTRY_EMOJI = {
   "AFGHANISTAN": "🇦🇫", "ALBANIA": "🇦🇱", "ALGERIA": "🇩🇿", "ANDORRA": "🇦🇩", "ANGOLA": "🇦🇴",
   "ANTIGUA AND BARBUDA": "🇦🇬", "ARGENTINA": "🇦🇷", "ARMENIA": "🇦🇲", "AUSTRALIA": "🇦🇺", "AUSTRIA": "🇦🇹",
@@ -59,11 +61,11 @@ GLOBAL_COUNTRY_EMOJI = {
 # ----------------------------------------------
 
 # --- KONFIGURASI PROGRESS BAR GLOBAL (DIUBAH TOTAL) ---
-MAX_BAR_LENGTH = 12 # Panjang total bar
+# ... (Fungsi get_progress_message tidak diubah) ...
+MAX_BAR_LENGTH = 12 
 FILLED_CHAR = "█"
 EMPTY_CHAR = "░"
 
-# Teks status berdasarkan langkah
 STATUS_MAP = {
     0:  "Menunggu di antrian sistem aktif..",
     1:  "Mengakses alamat target web aktif.",
@@ -79,8 +81,6 @@ STATUS_MAP = {
 def get_progress_message(current_step, total_steps, prefix_range):
     """Menghasilkan pesan progress bar baru."""
     # Hitung persentase progress (di antara 0 dan 100)
-    # Total langkah yang terdefinisi sebelum ditemukan adalah 10 (3 navigasi + 7 loop)
-    # Kita menggunakan 15 sebagai max step saat progress
     progress_ratio = min(current_step / 15, 1.0)
     filled_count = math.ceil(progress_ratio * MAX_BAR_LENGTH)
     empty_count = MAX_BAR_LENGTH - filled_count
@@ -123,7 +123,11 @@ except (TypeError, ValueError) as e:
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 BASE_WEB_URL = "https://v2.mnitnetwork.com/dashboard/getnum" 
 
-# ... (Utilitas file, load/save cache, normalize number, dll. TIDAK BERUBAH) ...
+# --- KONSTANTA FILE BARU ---
+USER_FILE = "user.json" # File untuk menyimpan semua ID pengguna yang terverifikasi
+# ---------------------------
+
+# ... (Konstanta file lainnya tidak diubah) ...
 CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
@@ -133,6 +137,11 @@ BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot"
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g" 
 
+# --- VARIABEL GLOBAL BARU ---
+waiting_broadcast_input = set() # Set untuk admin yang sedang dalam mode /info
+broadcast_message = {} # Untuk menyimpan pesan dan pesan_id dari admin
+# ----------------------------
+
 verified_users = set()
 waiting_admin_input = set()
 manual_range_input = set() 
@@ -141,8 +150,29 @@ sent_numbers = set()
 last_used_range = {}
 
 
-# --- FUNGSI UTILITAS MANAJEMEN FILE (Disertakan untuk kelengkapan) ---
+# --- FUNGSI UTILITAS MANAJEMEN FILE BARU ---
 
+def load_users():
+    """Memuat semua ID pengguna yang terverifikasi dari user.json."""
+    if os.path.exists(USER_FILE):
+        with open(USER_FILE, "r") as f:
+            try:
+                # Menggunakan set untuk memastikan keunikan ID
+                return set(json.load(f))
+            except json.JSONDecodeError:
+                return set()
+    return set()
+
+def save_users(user_id):
+    """Menyimpan ID pengguna baru ke user.json."""
+    users = load_users()
+    if user_id not in users:
+        users.add(user_id)
+        with open(USER_FILE, "w") as f:
+            # Menyimpan sebagai list, lalu memuat sebagai set
+            json.dump(list(users), f, indent=2)
+
+# ... (Fungsi load_cache, save_cache, is_in_cache, load_inline_ranges, save_inline_ranges, dll. tidak diubah) ...
 def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
@@ -222,9 +252,11 @@ def normalize_number(number):
     if not normalized_number.startswith('+'):
         normalized_number = '+' + normalized_number
     return normalized_number
+# ----------------------------------------------------
 
-# --- FUNGSI UTILITAS TELEGRAM API (Termasuk tg_delete dan tg_send_action BARU) ---
 
+# --- FUNGSI UTILITAS TELEGRAM API ---
+# ... (tg_send, tg_edit, tg_delete, tg_send_action, tg_get_updates, is_user_in_group, is_user_in_both_groups, clear_pending_updates tidak diubah) ...
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
@@ -309,15 +341,53 @@ def clear_pending_updates():
     except Exception as e:
         print(f"[ERROR CLEAR UPDATES] Gagal membersihkan pending updates: {e}")
 
+async def tg_broadcast(message_text, admin_id):
+    """Mengirim pesan siaran ke semua pengguna yang tersimpan."""
+    user_ids = list(load_users())
+    success_count = 0
+    fail_count = 0
+    
+    # Kirim pesan progress ke Admin
+    admin_msg_id = tg_send(admin_id, f"🔄 Memulai siaran ke **{len(user_ids)}** pengguna. Harap tunggu...")
+
+    for i, user_id in enumerate(user_ids):
+        # Memperbarui progress setiap 10 pesan
+        if i % 10 == 0 and admin_msg_id:
+             try:
+                 tg_edit(admin_id, admin_msg_id, f"🔄 Siaran: **{i}/{len(user_ids)}** (Sukses: {success_count}, Gagal: {fail_count})")
+             except:
+                 pass # Abaikan jika pesan sudah terlalu lama/gagal diedit
+        
+        # Kirim pesan
+        res = tg_send(user_id, message_text)
+        if res:
+            success_count += 1
+        else:
+            fail_count += 1
+        await asyncio.sleep(0.05) # Jeda kecil untuk menghindari rate limit Telegram
+
+    # Pesan akhir ke Admin
+    final_msg = (
+        f"✅ Siaran Selesai!\n\n"
+        f"👥 Total Pengguna: **{len(user_ids)}**\n"
+        f"🟢 Berhasil Terkirim: **{success_count}**\n"
+        f"🔴 Gagal Terkirim: **{fail_count}**"
+    )
+    if admin_msg_id:
+        tg_edit(admin_id, admin_msg_id, final_msg)
+    else:
+        tg_send(admin_id, final_msg)
+
 # --- FUNGSI ASYNC UNTUK MENGIRIM CHAT ACTION ---
 async def action_task(chat_id, action_interval=4.5):
+# ... (action_task tidak diubah) ...
     """Mengirim status chat action berulang kali untuk ilusi 'typing...'."""
     while True:
-        tg_send_action(chat_id, action="typing") # 'typing' adalah yang paling sering digunakan
-        await asyncio.sleep(action_interval) # Telegram merekomendasikan jeda 5 detik
+        tg_send_action(chat_id, action="typing") 
+        await asyncio.sleep(action_interval) 
 
 # --- FUNGSI PLAYWRIGHT ASYNC (DIUBAH) ---
-
+# ... (get_number_and_country tidak diubah) ...
 async def get_number_and_country(page):
     """Mengambil nomor terbaru dari tabel, jika belum di cache dan status belum final."""
     try:
@@ -347,7 +417,7 @@ async def get_number_and_country(page):
         # print(f"[ERROR GET NUMBER] Gagal membaca DOM: {e}")
         return None, None
 
-
+# ... (process_user_input tidak diubah) ...
 async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
     """Memproses permintaan Get Number menggunakan Playwright dengan tab baru untuk setiap permintaan."""
     global GLOBAL_COUNTRY_EMOJI 
@@ -355,7 +425,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
     page = None
-    action_loop_task = None # Task untuk chat action
+    action_loop_task = None 
 
     # --- Feedback Antrian ---
     if playwright_lock.locked():
@@ -387,72 +457,63 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             # 1. NAVIGASI KE URL BARU
             NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
             await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=30000)
-            current_step = 1 # Update Status
+            current_step = 1 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
             # --- Jeda 3 Detik di sini ---
             await asyncio.sleep(3) 
-            current_step = 2 # Update Status
+            current_step = 2 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
 
             # 2. TUNGGU TOMBOL SIAP DAN KLIK (Awal)
             await page.wait_for_selector("#getNumberBtn", state='visible', timeout=15000)
             await page.click("#getNumberBtn", force=True)
-            current_step = 3 # Update Status
+            current_step = 3 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
             # 3. TUNGGU PEMUATAN JARINGAN & PENCARIAN (Awal)
             await asyncio.sleep(1) 
-            current_step = 4 # Update Status
+            current_step = 4 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             await page.wait_for_load_state('networkidle', timeout=15000) 
             await asyncio.sleep(2) 
             
             # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
-            # Total durasi loop 10 detik. Dibagi menjadi 10 langkah utama (1 detik per langkah).
             delay_duration_round_1 = 5.0 
             delay_duration_round_2 = 5.0
             
-            progress_update_interval = 0.2 # Pembaruan visual lebih halus
-            check_number_interval = 1.0 # Pengecekan Playwright setiap 1.0 detik
+            progress_update_interval = 0.2 
+            check_number_interval = 1.0 
             
             number = None
             country = None
             
-            # Total 10 detik pencarian + 2 detik klik ulang (jika perlu)
-            
             for round_num, duration in enumerate([delay_duration_round_1, delay_duration_round_2]):
                 
-                # Update status per siklus
                 if round_num == 0:
-                    current_step = 5 # Siklus 1 dimulai
+                    current_step = 5 
                 elif round_num == 1:
-                    # Logika Klik Ulang pada Siklus 2
                     if not number: 
                         await page.click("#getNumberBtn", force=True)
                         await asyncio.sleep(1) 
                         await page.wait_for_load_state('networkidle', timeout=15000)
                         await asyncio.sleep(2) 
-                        current_step = 8 # Siklus 2 dimulai
+                        current_step = 8 
                 
                 start_time = time.time()
                 last_number_check_time = 0.0 
                 
-                # Loop utama pencarian
                 while (time.time() - start_time) < duration:
                     
                     current_time = time.time()
                     
-                    # Logika Pemeriksaan Nomor (setiap 1.0 detik)
                     if current_time - last_number_check_time >= check_number_interval:
                         number, country = await get_number_and_country(page)
                         last_number_check_time = current_time 
                         if number:
-                            # NOMOR DITEMUKAN: Kunci langkah saat ini dan keluar dari loop pencarian
                             current_step = math.ceil( (time.time() - start_time) * (15/10) ) + (5 if round_num == 0 else 8)
                             break
                     
-                    # Logika Update Progress Bar
                     current_step += 1
                     tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
                     
@@ -466,15 +527,12 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN. Coba lagi atau ganti range.")
                 return 
 
-            # Jika nomor ditemukan, paksa progress bar ke 100% sebelum pesan akhir
             if number:
-                # Simulasi finalisasi progress bar
                 while current_step < 15:
                     current_step += 1
                     tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
-                    await asyncio.sleep(0.1) # Progress cepat ke 100%
+                    await asyncio.sleep(0.1) 
 
-            # Sekarang kirim pesan final
             save_cache({"number": number, "country": country, "user_id": user_id, "time": time.time()})
             add_to_wait_list(number, user_id)
             last_used_range[user_id] = prefix 
@@ -519,8 +577,16 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                 print(f"[DEBUG] Chat action untuk user {user_id} dibatalkan")
 
 
-# --- LOOP UTAMA TELEGRAM (TIDAK BERUBAH) ---
+# --- LOOP UTAMA TELEGRAM (DIUBAH) ---
 async def telegram_loop(browser):
+    global verified_users 
+    global waiting_broadcast_input
+    global broadcast_message
+    
+    # MUAT ID PENGGUNA TERVERIFIKASI SAAT START
+    verified_users = load_users()
+    print(f"[INFO] Memuat {len(verified_users)} ID pengguna yang tersimpan.")
+
     offset = 0
     while True:
         data = tg_get_updates(offset)
@@ -536,18 +602,8 @@ async def telegram_loop(browser):
                 text = msg.get("text", "")
 
                 # ... (Logika command dan input lainnya sama) ...
-                # --- WELCOME MESSAGE ---
-                if "new_chat_members" in msg and chat_id == GROUP_ID_2:
-                    for member in msg["new_chat_members"]:
-                        if member["is_bot"]: continue
-                        member_first_name = member.get("first_name", "New User")
-                        member_mention = f"<a href='tg://user?id={member['id']}'>{member_first_name}</a>"
-                        welcome_message = (f"🥳HI!! {member_mention} WELCOME TO GRUP\nREADY TO RECEIVE SMS⁉️\n📞GET NUMBER IN BOT⤵️⤵️")
-                        inline_kb = {"inline_keyboard": [[{"text": "📲 GET NUMBER", "url": BOT_USERNAME_LINK}]]}
-                        tg_send(chat_id, welcome_message, reply_markup=inline_kb)
-                    continue
-
-                # --- ADMIN /add COMMAND ---
+                
+                # --- ADMIN /add COMMAND --- (Tidak diubah)
                 if user_id == ADMIN_ID:
                     if text.startswith("/add"):
                         waiting_admin_input.add(user_id)
@@ -556,7 +612,15 @@ async def telegram_loop(browser):
                         if msg_id: pending_message[user_id] = msg_id
                         continue
 
-                # --- ADMIN INPUT PROCESSING ---
+                    # --- ADMIN /info COMMAND BARU ---
+                    elif text == "/info":
+                        waiting_broadcast_input.add(user_id)
+                        prompt_msg_text = "<b>Pesan Siaran</b>\n\nSilahkan kirim pesan apapun (teks, markdown, html) yang akan di sampaikan ke seluruh pengguna bot.\n\nKetik <code>.batal</code> untuk membatalkan."
+                        msg_id = tg_send(user_id, prompt_msg_text)
+                        if msg_id: broadcast_message[user_id] = msg_id # Simpan ID pesan prompt
+                        continue
+
+                # --- ADMIN INPUT PROCESSING (ADD RANGE) --- (Tidak diubah)
                 if user_id in waiting_admin_input:
                     waiting_admin_input.remove(user_id)
                     new_ranges = []
@@ -575,7 +639,25 @@ async def telegram_loop(browser):
                         if prompt_msg_id: tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
                     continue
 
-                # --- PEMROSESAN INPUT RANGE MANUAL DARI USER ---
+                # --- ADMIN INPUT PROCESSING (BROADCAST) BARU ---
+                if user_id in waiting_broadcast_input:
+                    waiting_broadcast_input.remove(user_id)
+                    prompt_msg_id = broadcast_message.pop(user_id, None) 
+                    
+                    if text.strip().lower() == ".batal":
+                        if prompt_msg_id: tg_edit(chat_id, prompt_msg_id, "❌ Siaran dibatalkan.")
+                        else: tg_send(chat_id, "❌ Siaran dibatalkan.")
+                        continue
+
+                    # Kirim pesan siaran
+                    if prompt_msg_id: tg_edit(chat_id, prompt_msg_id, "✅ Pesan diterima. Memulai siaran...")
+                    else: tg_send(chat_id, "✅ Pesan diterima. Memulai siaran...")
+
+                    await tg_broadcast(text, user_id)
+                    continue
+                # --------------------------------------------------
+
+                # --- PEMROSESAN INPUT RANGE MANUAL DARI USER --- (Tidak diubah)
                 if user_id in manual_range_input:
                     manual_range_input.remove(user_id) 
                     prefix = text.strip()
@@ -597,11 +679,12 @@ async def telegram_loop(browser):
                     continue
                 # ----------------------------------------------------
 
-                # --- /start COMMAND ---
+                # --- /start COMMAND (DIUBAH) ---
                 if text == "/start":
                     is_member = is_user_in_both_groups(user_id)
                     if is_member:
                         verified_users.add(user_id)
+                        save_users(user_id) # <<< PERUBAHAN UTAMA: SIMPAN ID USER
                         kb = {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}],[{"text": "👨‍💼 Admin", "url": "https://t.me/"}],]}
                         msg_text = (f"✅ Verifikasi Berhasil, {mention}!\n\nGunakan tombol di bawah:")
                         tg_send(user_id, msg_text, kb)
@@ -618,16 +701,19 @@ async def telegram_loop(browser):
                 chat_id = cq["message"]["chat"]["id"]
                 menu_msg_id = cq["message"]["message_id"]
 
+                # --- CALLBACK VERIFY (DIUBAH) ---
                 if data_cb == "verify":
                     if not is_user_in_both_groups(user_id):
                         kb = {"inline_keyboard": [[{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}], [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}], [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],]}
                         tg_edit(chat_id, menu_msg_id, "❌ Belum gabung kedua grup. Silakan join dulu.", kb)
                     else:
                         verified_users.add(user_id)
+                        save_users(user_id) # <<< PERUBAHAN UTAMA: SIMPAN ID USER
                         kb = {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}],[{"text": "👨‍💼 Admin", "url": "https://t.me/"}],]}
                         tg_edit(chat_id, menu_msg_id, "✅ Verifikasi Berhasil!\n\nGunakan tombol di bawah:", kb)
                     continue
-
+                
+                # ... (Callback lainnya tidak diubah) ...
                 if data_cb == "getnum":
                     if user_id not in verified_users:
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
@@ -641,7 +727,6 @@ async def telegram_loop(browser):
                         tg_edit(chat_id, menu_msg_id, "❌ Belum ada Range yang tersedia otomatis. Silahkan gunakan Input Manual Range.", kb)
                     continue
 
-                # --- PENANGANAN CALLBACK MANUAL RANGE ---
                 if data_cb == "manual_range":
                     if user_id not in verified_users:
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
@@ -657,7 +742,6 @@ async def telegram_loop(browser):
                     tg_edit(chat_id, menu_msg_id, prompt_msg_text) 
                     pending_message[user_id] = menu_msg_id 
                     continue
-                # --------------------------------------------------
                 
                 if data_cb.startswith("select_range:"):
                     if user_id not in verified_users:
@@ -681,11 +765,8 @@ async def telegram_loop(browser):
                         tg_edit(chat_id, menu_msg_id, "❌ Tidak ada range terakhir yang tersimpan. Silakan pilih range baru melalui /start.")
                         return
                     
-                    # MODIFIKASI: HAPUS PESAN LAMA
                     tg_delete(chat_id, menu_msg_id)
                     
-                    # Panggil process_user_input TANPA message_id_to_edit
-                    # process_user_input akan secara otomatis membuat pesan baru
                     await process_user_input(browser, user_id, prefix) 
                     continue
                 
@@ -698,6 +779,12 @@ def initialize_files():
             with open(file, "w") as f:
                 f.write(default_content)
     
+    # PASTIKAN USER_FILE ADA
+    if not os.path.exists(USER_FILE):
+        with open(USER_FILE, "w") as f:
+            f.write("[]")
+        print(f"[INFO] File {USER_FILE} dibuat.")
+
     # BERSIHKAN WAIT LIST SAAT START
     if os.path.exists(WAIT_FILE):
         os.remove(WAIT_FILE)
@@ -705,13 +792,13 @@ def initialize_files():
     with open(WAIT_FILE, "w") as f:
         f.write("[]")
     
-    # HAPUS BAGIAN PEMBUATAN/PEMUATAN country.json
     if os.path.exists(COUNTRY_EMOJI_FILE):
         print(f"[INFO] Menghapus file {COUNTRY_EMOJI_FILE} yang sudah tidak terpakai.")
         os.remove(COUNTRY_EMOJI_FILE)
 
 
 async def main():
+# ... (Fungsi main tidak diubah) ...
     print("[INFO] Starting main bot (Telegram/Playwright)...")
     initialize_files()
     
