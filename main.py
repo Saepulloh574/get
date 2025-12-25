@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 import subprocess
 import sys
 import time
+import math # Import untuk perhitungan progress bar
 
 # --- ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
 playwright_lock = asyncio.Lock()
@@ -57,20 +58,54 @@ GLOBAL_COUNTRY_EMOJI = {
 }
 # ----------------------------------------------
 
-# --- KONFIGURASI PROGRESS BAR GLOBAL (DIUBAH) ---
-MAX_BARS = 12 # MODIFIKASI: Diubah dari 15 menjadi 12
-BAR_EMOJI = "◽"
+# --- KONFIGURASI PROGRESS BAR GLOBAL (DIUBAH TOTAL) ---
+MAX_BAR_LENGTH = 12 # Panjang total bar
+FILLED_CHAR = "█"
+EMPTY_CHAR = "░"
+
+# Teks status berdasarkan langkah
+STATUS_MAP = {
+    0: "Menunggu di antrian...",
+    1: "Mengakses URL target...",
+    2: "Menunggu pemuatan halaman...",
+    3: "Memicu permintaan nomor...",
+    4: "Menunggu respons jaringan...",
+    5: "Mencari nomor (Siklus 1)...",
+    8: "Mencoba lagi (Siklus 2)...",
+    12: "Nomor ditemukan, memproses hasil...",
+    15: "Finalisasi..."
+}
 
 def get_progress_message(current_step, total_steps, prefix_range):
-    """Menghasilkan pesan progress bar yang berulang, dapat diakses secara global."""
-    bar_count = (current_step % MAX_BARS) + 1
-    progress_bar = BAR_EMOJI * bar_count
+    """Menghasilkan pesan progress bar baru."""
+    # Hitung persentase progress (di antara 0 dan 100)
+    # Total langkah yang terdefinisi sebelum ditemukan adalah 10 (3 navigasi + 7 loop)
+    # Kita menggunakan 15 sebagai max step saat progress
+    progress_ratio = min(current_step / 15, 1.0)
+    filled_count = math.ceil(progress_ratio * MAX_BAR_LENGTH)
+    empty_count = MAX_BAR_LENGTH - filled_count
     
-    # MODIFIKASI: Menambahkan tag <code> pada bagian tertentu
+    progress_bar = FILLED_CHAR * filled_count + EMPTY_CHAR * empty_count
+    
+    # Tentukan Status Teks
+    current_status = STATUS_MAP.get(current_step)
+    if not current_status:
+        # Interpolasi status jika langkah tidak ada di map
+        if current_step < 5:
+            current_status = STATUS_MAP[1]
+        elif current_step < 8:
+            current_status = STATUS_MAP[5]
+        elif current_step < 12:
+            current_status = STATUS_MAP[8]
+        elif current_step < 15:
+            current_status = STATUS_MAP[12]
+        else:
+            current_status = STATUS_MAP[15]
+
     return (
-    f"<code>Looking for your number, please be patient, sir.</code>\n"
+    f"<code>{current_status}</code>\n"
     f"<blockquote>Range: <code>{prefix_range}</code></blockquote>\n"
-    f"<code>Load:</code> {progress_bar}"
+    f"<code>Load:</code> [{progress_bar}]"
 )
 # ---------------------------------------------------------
 
@@ -88,6 +123,7 @@ except (TypeError, ValueError) as e:
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 BASE_WEB_URL = "https://v2.mnitnetwork.com/dashboard/getnum" 
 
+# ... (Utilitas file, load/save cache, normalize number, dll. TIDAK BERUBAH) ...
 CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
@@ -105,7 +141,7 @@ sent_numbers = set()
 last_used_range = {}
 
 
-# --- FUNGSI UTILITAS MANAJEMEN FILE ---
+# --- FUNGSI UTILITAS MANAJEMEN FILE (Disertakan untuk kelengkapan) ---
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -157,7 +193,7 @@ def generate_inline_keyboard(ranges):
     if current_row:
         keyboard.append(current_row)
     
-    keyboard.append([{"text": "✍️ Input Manual Range", "callback_data": "manual_range"}])
+    keyboard.append([{"text": "Input Manual Range..🖊️", "callback_data": "manual_range"}])
     
     return {"inline_keyboard": keyboard}
 
@@ -187,8 +223,7 @@ def normalize_number(number):
         normalized_number = '+' + normalized_number
     return normalized_number
 
-
-# --- FUNGSI UTILITAS TELEGRAM API (Termasuk tg_delete) ---
+# --- FUNGSI UTILITAS TELEGRAM API (Termasuk tg_delete dan tg_send_action BARU) ---
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -228,6 +263,14 @@ def tg_delete(chat_id, message_id):
     except Exception as e:
         print(f"[ERROR DELETE REQUEST] {e}")
 
+def tg_send_action(chat_id, action="typing"):
+    """Mengirim status chat action (misalnya, 'typing') ke pengguna."""
+    data = {"chat_id": chat_id, "action": action}
+    try:
+        requests.post(f"{API}/sendChatAction", data=data)
+    except Exception as e:
+        print(f"[ERROR SEND ACTION] {e}")
+
 def tg_get_updates(offset):
     try:
         return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 5}).json()
@@ -266,8 +309,14 @@ def clear_pending_updates():
     except Exception as e:
         print(f"[ERROR CLEAR UPDATES] Gagal membersihkan pending updates: {e}")
 
+# --- FUNGSI ASYNC UNTUK MENGIRIM CHAT ACTION ---
+async def action_task(chat_id, action_interval=4.5):
+    """Mengirim status chat action berulang kali untuk ilusi 'typing...'."""
+    while True:
+        tg_send_action(chat_id, action="typing") # 'typing' adalah yang paling sering digunakan
+        await asyncio.sleep(action_interval) # Telegram merekomendasikan jeda 5 detik
 
-# --- FUNGSI PLAYWRIGHT ASYNC ---
+# --- FUNGSI PLAYWRIGHT ASYNC (DIUBAH) ---
 
 async def get_number_and_country(page):
     """Mengambil nomor terbaru dari tabel, jika belum di cache dan status belum final."""
@@ -306,6 +355,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
     page = None
+    action_loop_task = None # Task untuk chat action
 
     # --- Feedback Antrian ---
     if playwright_lock.locked():
@@ -319,6 +369,9 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
     async with playwright_lock:
         
         try:
+            # 1. Start Chat Action (Notifikasi di atas chat)
+            action_loop_task = asyncio.create_task(action_task(user_id))
+            
             current_step = 0 
             
             # --- Inisialisasi Pesan Awal ---
@@ -334,75 +387,94 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             # 1. NAVIGASI KE URL BARU
             NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
             await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=30000)
-            current_step += 1
+            current_step = 1 # Update Status
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
             # --- Jeda 3 Detik di sini ---
             await asyncio.sleep(3) 
-            current_step += 1
+            current_step = 2 # Update Status
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
 
             # 2. TUNGGU TOMBOL SIAP DAN KLIK (Awal)
             await page.wait_for_selector("#getNumberBtn", state='visible', timeout=15000)
             await page.click("#getNumberBtn", force=True)
+            current_step = 3 # Update Status
+            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
             # 3. TUNGGU PEMUATAN JARINGAN & PENCARIAN (Awal)
             await asyncio.sleep(1) 
-            current_step += 1
+            current_step = 4 # Update Status
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             await page.wait_for_load_state('networkidle', timeout=15000) 
             await asyncio.sleep(2) 
-            current_step += 1
-            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
-
-            # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
-            delay_duration_round_1 = 5.0 # Durasi pencarian Siklus 1
-            delay_duration_round_2 = 5.0 # Durasi pencarian Siklus 2
             
-            # MODIFIKASI UTAMA: Update Progress Bar setiap 0.5 detik
-            progress_update_interval = 0.1 
-            check_number_interval = 1.0 # Interval pengecekan nomor Playwright
+            # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
+            # Total durasi loop 10 detik. Dibagi menjadi 10 langkah utama (1 detik per langkah).
+            delay_duration_round_1 = 5.0 
+            delay_duration_round_2 = 5.0
+            
+            progress_update_interval = 0.2 # Pembaruan visual lebih halus
+            check_number_interval = 1.0 # Pengecekan Playwright setiap 1.0 detik
             
             number = None
+            country = None
+            
+            # Total 10 detik pencarian + 2 detik klik ulang (jika perlu)
             
             for round_num, duration in enumerate([delay_duration_round_1, delay_duration_round_2]):
                 
-                # Logika Klik Ulang pada Siklus 2
-                if round_num == 1 and not number: 
-                    await page.click("#getNumberBtn", force=True)
-                    await asyncio.sleep(1) 
-                    await page.wait_for_load_state('networkidle', timeout=15000)
-                    await asyncio.sleep(2) 
-                    
+                # Update status per siklus
+                if round_num == 0:
+                    current_step = 5 # Siklus 1 dimulai
+                elif round_num == 1:
+                    # Logika Klik Ulang pada Siklus 2
+                    if not number: 
+                        await page.click("#getNumberBtn", force=True)
+                        await asyncio.sleep(1) 
+                        await page.wait_for_load_state('networkidle', timeout=15000)
+                        await asyncio.sleep(2) 
+                        current_step = 8 # Siklus 2 dimulai
+                
                 start_time = time.time()
-                last_number_check_time = 0.0 # Waktu terakhir kita mengecek get_number_and_country
-
+                last_number_check_time = 0.0 
+                
+                # Loop utama pencarian
                 while (time.time() - start_time) < duration:
                     
                     current_time = time.time()
                     
                     # Logika Pemeriksaan Nomor (setiap 1.0 detik)
-                    # Hanya panggil Playwright jika sudah waktunya
                     if current_time - last_number_check_time >= check_number_interval:
                         number, country = await get_number_and_country(page)
-                        last_number_check_time = current_time # Update waktu pengecekan
-                        if number: break
+                        last_number_check_time = current_time 
+                        if number:
+                            # NOMOR DITEMUKAN: Kunci langkah saat ini dan keluar dari loop pencarian
+                            current_step = math.ceil( (time.time() - start_time) * (15/10) ) + (5 if round_num == 0 else 8)
+                            break
                     
-                    # Logika Update Progress Bar (setiap 0.5 detik)
-                    # Progress bar harus selalu bergerak untuk feedback UI
+                    # Logika Update Progress Bar
                     current_step += 1
                     tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
                     
-                    # Jeda untuk memastikan pembaruan terjadi setiap 0.5 detik
                     await asyncio.sleep(progress_update_interval) 
                     
                 if number: break
 
+            # 6. PENYIMPANAN & RESPON
+            
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN. Coba lagi atau ganti range.")
                 return 
 
-            # 6. PENYIMPANAN & RESPON
+            # Jika nomor ditemukan, paksa progress bar ke 100% sebelum pesan akhir
+            if number:
+                # Simulasi finalisasi progress bar
+                while current_step < 15:
+                    current_step += 1
+                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
+                    await asyncio.sleep(0.1) # Progress cepat ke 100%
+
+            # Sekarang kirim pesan final
             save_cache({"number": number, "country": country, "user_id": user_id, "time": time.time()})
             add_to_wait_list(number, user_id)
             last_used_range[user_id] = prefix 
@@ -437,14 +509,17 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             print(f"[ERROR FATAL DIBLOKIR] Proses Playwright Gagal Total: {error_type} - {e}")
             if msg_id: tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan fatal ({error_type}). Mohon coba lagi atau hubungi admin.")
         
-        # --- BLOK FINALLY: PASTIKAN TAB DITUTUP ---
+        # --- BLOK FINALLY: PASTIKAN TAB DITUTUP DAN ACTION DIBATALKAN ---
         finally:
             if page:
                 await page.close()
                 print(f"[DEBUG] Tab untuk user {user_id} ditutup")
+            if action_loop_task:
+                action_loop_task.cancel()
+                print(f"[DEBUG] Chat action untuk user {user_id} dibatalkan")
 
 
-# --- LOOP UTAMA TELEGRAM ---
+# --- LOOP UTAMA TELEGRAM (TIDAK BERUBAH) ---
 async def telegram_loop(browser):
     offset = 0
     while True:
@@ -460,6 +535,7 @@ async def telegram_loop(browser):
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
 
+                # ... (Logika command dan input lainnya sama) ...
                 # --- WELCOME MESSAGE ---
                 if "new_chat_members" in msg and chat_id == GROUP_ID_2:
                     for member in msg["new_chat_members"]:
