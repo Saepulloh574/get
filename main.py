@@ -15,7 +15,6 @@ playwright_lock = asyncio.Lock()
 
 # --- DATA GLOBAL EMOJI NEGARA (DIGABUNGKAN) ---
 GLOBAL_COUNTRY_EMOJI = {
-# ... (data emoji negara, tidak diubah) ...
   "AFGHANISTAN": "🇦🇫", "ALBANIA": "🇦🇱", "ALGERIA": "🇩🇿", "ANDORRA": "🇦🇩", "ANGOLA": "🇦🇴",
   "ANTIGUA AND BARBUDA": "🇦🇬", "ARGENTINA": "🇦🇷", "ARMENIA": "🇦🇲", "AUSTRALIA": "🇦🇺", "AUSTRIA": "🇦🇹",
   "AZERBAIJAN": "🇦🇿", "BAHAMAS": "🇧🇸", "BAHRAIN": "🇧🇭", "BANGLADESH": "🇧🇩", "BARBADOS": "🇧🇧",
@@ -64,7 +63,6 @@ BAR_EMOJI = "◽"
 
 def get_progress_message(current_step, total_steps, prefix_range):
     """Menghasilkan pesan progress bar yang berulang, dapat diakses secara global."""
-    # total_steps tidak dipakai, hanya untuk kompatibilitas jika nanti butuh
     bar_count = (current_step % MAX_BARS) + 1
     progress_bar = BAR_EMOJI * bar_count
     
@@ -283,20 +281,19 @@ async def get_number_and_country(page):
         return None, None
         
     except Exception as e:
-        print(f"[ERROR GET NUMBER] Gagal membaca DOM: {e}")
+        # Menghilangkan logging error berlebihan yang terjadi selama polling Playwright
+        # print(f"[ERROR GET NUMBER] Gagal membaca DOM: {e}")
         return None, None
 
 
-# MODIFIKASI: Menerima 'browser' bukan 'page'
+# MODIFIKASI: Menerima 'browser'
 async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
     """Memproses permintaan Get Number menggunakan Playwright dengan tab baru untuk setiap permintaan."""
     global GLOBAL_COUNTRY_EMOJI 
     global last_used_range 
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
-    page = None # Inisiasi page di luar try
-
-    # Catatan: Fungsi get_progress_message sekarang di scope global
+    page = None
 
     # --- Feedback Antrian ---
     if playwright_lock.locked():
@@ -310,7 +307,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
     async with playwright_lock:
         
         try:
-            current_step = 0 # Inisialisasi langkah progress
+            current_step = 0 
             
             # --- Inisialisasi Pesan Awal ---
             if not msg_id:
@@ -328,7 +325,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             current_step += 1
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
-            # --- PERUBAHAN UTAMA: Tambahkan Jeda 3 Detik di sini ---
+            # --- Jeda 3 Detik di sini ---
             await asyncio.sleep(3) 
             current_step += 1
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
@@ -349,32 +346,44 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
             delay_duration_round_1 = 5.0 # Durasi pencarian Siklus 1
             delay_duration_round_2 = 5.0 # Durasi pencarian Siklus 2
-            update_interval = 1.0
+            
+            # MODIFIKASI UTAMA: Update Progress Bar setiap 0.5 detik
+            progress_update_interval = 0.5 
+            check_number_interval = 1.0 # Interval pengecekan nomor Playwright
+            
             number = None
             
             for round_num, duration in enumerate([delay_duration_round_1, delay_duration_round_2]):
                 
-                # --- LOGIKA TAMBAHAN: KLIK TOMBOL LAGI PADA SIKLUS 2 JIKA SIKLUS 1 GAGAL ---
+                # Logika Klik Ulang pada Siklus 2
                 if round_num == 1 and not number: 
                     await page.click("#getNumberBtn", force=True)
                     await asyncio.sleep(1) 
                     await page.wait_for_load_state('networkidle', timeout=15000)
                     await asyncio.sleep(2) 
-                # -------------------------------------------------------------------------
-
+                    
                 start_time = time.time()
-                
+                last_number_check_time = 0.0 # Waktu terakhir kita mengecek get_number_and_country
+
                 while (time.time() - start_time) < duration:
                     
-                    # --- UPDATE PROGRESS BAR SESUAI PERMINTAAN USER ---
+                    current_time = time.time()
+                    
+                    # Logika Pemeriksaan Nomor (setiap 1.0 detik)
+                    # Hanya panggil Playwright jika sudah waktunya
+                    if current_time - last_number_check_time >= check_number_interval:
+                        number, country = await get_number_and_country(page)
+                        last_number_check_time = current_time # Update waktu pengecekan
+                        if number: break
+                    
+                    # Logika Update Progress Bar (setiap 0.5 detik)
+                    # Progress bar harus selalu bergerak untuk feedback UI
                     current_step += 1
                     tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
-                    # --------------------------------------------------
                     
-                    number, country = await get_number_and_country(page)
-                    if number: break
-                    await asyncio.sleep(update_interval)
-                
+                    # Jeda untuk memastikan pembaruan terjadi setiap 0.5 detik
+                    await asyncio.sleep(progress_update_interval) 
+                    
                 if number: break
 
             if not number:
@@ -386,7 +395,6 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             add_to_wait_list(number, user_id)
             last_used_range[user_id] = prefix 
 
-            # Menggunakan GLOBAL_COUNTRY_EMOJI yang sudah di-hardcode
             emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️") 
             msg = (
                 "✅ The number is ready\n\n"
@@ -424,7 +432,7 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                 print(f"[DEBUG] Tab untuk user {user_id} ditutup")
 
 
-# --- LOOP UTAMA TELEGRAM (Diperbaiki: Panggilan get_progress_message) ---
+# --- LOOP UTAMA TELEGRAM ---
 async def telegram_loop(browser):
     offset = 0
     while True:
@@ -464,14 +472,11 @@ async def telegram_loop(browser):
                 if user_id in waiting_admin_input:
                     waiting_admin_input.remove(user_id)
                     new_ranges = []
-                    # GLOBAL_COUNTRY_EMOJI sudah tersedia secara global
                     for line in text.strip().split('\n'):
                         if ' > ' in line:
                             parts = line.split(' > ', 1)
                             range_prefix = parts[0].strip()
-                            # Ubah menjadi UPPERCASE untuk mencocokkan key GLOBAL_COUNTRY_EMOJI
                             country_name = parts[1].strip().upper() 
-                            # Menggunakan GLOBAL_COUNTRY_EMOJI langsung
                             emoji = GLOBAL_COUNTRY_EMOJI.get(country_name, "🗺️") 
                             new_ranges.append({"range": range_prefix, "country": country_name, "emoji": emoji})
                     prompt_msg_id = pending_message.pop(user_id, None)
@@ -482,23 +487,18 @@ async def telegram_loop(browser):
                         if prompt_msg_id: tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
                     continue
 
-                # --- BARU: PEMROSESAN INPUT RANGE MANUAL DARI USER ---
+                # --- PEMROSESAN INPUT RANGE MANUAL DARI USER ---
                 if user_id in manual_range_input:
-                    manual_range_input.remove(user_id) # Hapus dari set setelah menerima input
+                    manual_range_input.remove(user_id) 
                     prefix = text.strip()
                     menu_msg_id = pending_message.pop(user_id, None)
 
-                    # Validasi sederhana untuk memastikan range terlihat seperti range
                     if re.match(r"^\+?\d{3,15}[Xx*#]+$", prefix, re.IGNORECASE):
-                        # Edit pesan yang sudah ada (jika ada, dari callback 'manual_range')
                         if menu_msg_id:
-                            # Menggunakan fungsi global yang sudah diperbaiki
                             tg_edit(chat_id, menu_msg_id, get_progress_message(0, 0, prefix)) 
                         else:
-                            # Jika tidak ada message_id yang tersimpan, kirim pesan baru
                             menu_msg_id = tg_send(chat_id, get_progress_message(0, 0, prefix))
 
-                        # Lanjutkan ke proses utama Playwright
                         await process_user_input(browser, user_id, prefix, menu_msg_id)
                     else:
                         error_msg = "❌ Format Range tidak valid. Contoh format: <code>2327600XXX</code>. Silakan coba lagi."
@@ -549,12 +549,11 @@ async def telegram_loop(browser):
                         kb = generate_inline_keyboard(inline_ranges)
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nSilahkan gunakan range di bawah untuk mendapatkan nomor.", kb)
                     else:
-                        # Jika tidak ada range yang diatur, berikan tombol manual saja
                         kb = {"inline_keyboard": [[{"text": "✍️ Input Manual Range", "callback_data": "manual_range"}]]}
                         tg_edit(chat_id, menu_msg_id, "❌ Belum ada Range yang tersedia otomatis. Silahkan gunakan Input Manual Range.", kb)
                     continue
 
-                # --- BARU: PENANGANAN CALLBACK MANUAL RANGE ---
+                # --- PENANGANAN CALLBACK MANUAL RANGE ---
                 if data_cb == "manual_range":
                     if user_id not in verified_users:
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
@@ -567,10 +566,7 @@ async def telegram_loop(browser):
                         "<code>2327600XXX</code>\n\n"
                         "<i>(Pastikan format range sudah benar)</i>"
                     )
-                    # Edit pesan yang sama untuk meminta input
                     tg_edit(chat_id, menu_msg_id, prompt_msg_text) 
-                    
-                    # Simpan message_id untuk mengeditnya nanti dengan hasil
                     pending_message[user_id] = menu_msg_id 
                     continue
                 # --------------------------------------------------
@@ -581,12 +577,10 @@ async def telegram_loop(browser):
                         continue
                     prefix = data_cb.split(":")[1]
                     
-                    # MODIFIKASI: Langsung menggunakan progress bar
                     current_step = 0
                     message = get_progress_message(current_step, 0, prefix)
                     tg_edit(chat_id, menu_msg_id, message) 
 
-                    # Meneruskan objek 'browser'
                     await process_user_input(browser, user_id, prefix, menu_msg_id) 
                     continue
 
@@ -599,12 +593,10 @@ async def telegram_loop(browser):
                         tg_edit(chat_id, menu_msg_id, "❌ Tidak ada range terakhir yang tersimpan. Silakan pilih range baru melalui /start.")
                         return
                     
-                    # MODIFIKASI: Langsung menggunakan progress bar
                     current_step = 0
                     message = get_progress_message(current_step, 0, prefix)
                     tg_edit(chat_id, menu_msg_id, message)
                     
-                    # Meneruskan objek 'browser'
                     await process_user_input(browser, user_id, prefix, menu_msg_id) 
                     continue
                 
@@ -646,7 +638,7 @@ async def main():
     except Exception as e:
         print(f"[FATAL ERROR] Failed to start sms.py: {e}")
 
-    browser = None # Inisiasi browser
+    browser = None
     try:
         async with async_playwright() as p:
             try:
@@ -666,7 +658,7 @@ async def main():
             
             print("[OK] Connected to existing Chrome via CDP on port 9222")
             
-            # MODIFIKASI: Meneruskan objek 'browser'
+            # Meneruskan objek 'browser'
             await asyncio.gather(
                 telegram_loop(browser), 
             )
@@ -676,8 +668,6 @@ async def main():
 
     finally:
         if browser:
-            # Opsional: Menutup semua konteks jika browser dikontrol penuh
-            # await browser.close() 
             pass 
         
         if sms_process and sms_process.poll() is None:
