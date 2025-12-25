@@ -82,6 +82,7 @@ GROUP_LINK_2 = "https://t.me/zura14g"
 
 verified_users = set()
 waiting_admin_input = set()
+manual_range_input = set() # <-- BARU: Set untuk melacak user yang menunggu input range manual
 pending_message = {}
 sent_numbers = set()
 last_used_range = {}
@@ -89,7 +90,6 @@ last_used_range = {}
 
 
 # --- FUNGSI UTILITAS MANAJEMEN FILE ---
-# (Semua fungsi utilitas file tetap sama)
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -126,7 +126,7 @@ def save_inline_ranges(ranges):
         json.dump(ranges, f, indent=2)
 
 def generate_inline_keyboard(ranges):
-    """Membuat keyboard inline hanya dari daftar range yang tersedia."""
+    """Membuat keyboard inline dari daftar range yang tersedia, ditambah tombol Manual Range."""
     keyboard = []
     current_row = []
     for item in ranges:
@@ -141,6 +141,10 @@ def generate_inline_keyboard(ranges):
 
     if current_row:
         keyboard.append(current_row)
+    
+    # --- MODIFIKASI: Tambahkan tombol Manual Range di baris paling bawah ---
+    keyboard.append([{"text": "✍️ Input Manual Range", "callback_data": "manual_range"}])
+    # ----------------------------------------------------------------------
     
     return {"inline_keyboard": keyboard}
 
@@ -172,7 +176,6 @@ def normalize_number(number):
 
 
 # --- FUNGSI UTILITAS TELEGRAM API ---
-# (Semua fungsi utilitas Telegram API tetap sama)
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -400,7 +403,6 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
 
 
 # --- LOOP UTAMA TELEGRAM ---
-# MODIFIKASI: Menerima 'browser' bukan 'page'
 async def telegram_loop(browser):
     offset = 0
     while True:
@@ -416,8 +418,6 @@ async def telegram_loop(browser):
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
 
-                # ... (Logika welcome, admin /add, admin input, /start tetap sama) ...
-                
                 # --- WELCOME MESSAGE ---
                 if "new_chat_members" in msg and chat_id == GROUP_ID_2:
                     for member in msg["new_chat_members"]:
@@ -460,6 +460,32 @@ async def telegram_loop(browser):
                         if prompt_msg_id: tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid atau tidak ada range yang ditemukan. Batalkan penambahan range.")
                     continue
 
+                # --- BARU: PEMROSESAN INPUT RANGE MANUAL DARI USER ---
+                if user_id in manual_range_input:
+                    manual_range_input.remove(user_id) # Hapus dari set setelah menerima input
+                    prefix = text.strip()
+                    menu_msg_id = pending_message.pop(user_id, None)
+
+                    # Validasi sederhana untuk memastikan range terlihat seperti range
+                    if re.match(r"^\+?\d{3,15}[Xx*#]+$", prefix, re.IGNORECASE):
+                        # Edit pesan yang sudah ada (jika ada, dari callback 'manual_range')
+                        if menu_msg_id:
+                            tg_edit(chat_id, menu_msg_id, f"<b>Manual Range</b>\n\nRange diterima: <code>{prefix}</code>\n⏳ Sedang memproses...")
+                        else:
+                            # Jika tidak ada message_id yang tersimpan, kirim pesan baru
+                            menu_msg_id = tg_send(chat_id, f"<b>Manual Range</b>\n\nRange diterima: <code>{prefix}</code>\n⏳ Sedang memproses...")
+
+                        # Lanjutkan ke proses utama Playwright
+                        await process_user_input(browser, user_id, prefix, menu_msg_id)
+                    else:
+                        error_msg = "❌ Format Range tidak valid. Contoh format: <code>2327600XXX</code>. Silakan coba lagi."
+                        if menu_msg_id:
+                            tg_edit(chat_id, menu_msg_id, error_msg)
+                        else:
+                            tg_send(chat_id, error_msg)
+                    continue
+                # ----------------------------------------------------
+
                 # --- /start COMMAND ---
                 if text == "/start":
                     is_member = is_user_in_both_groups(user_id)
@@ -500,9 +526,31 @@ async def telegram_loop(browser):
                         kb = generate_inline_keyboard(inline_ranges)
                         tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nSilahkan gunakan range di bawah untuk mendapatkan nomor.", kb)
                     else:
-                        # Jika tidak ada range yang diatur, berikan pesan error
-                        tg_edit(chat_id, menu_msg_id, "❌ Belum ada Range yang tersedia. Silahkan hubungi Admin untuk menambah Range.")
+                        # Jika tidak ada range yang diatur, berikan tombol manual saja
+                        kb = {"inline_keyboard": [[{"text": "✍️ Input Manual Range", "callback_data": "manual_range"}]]}
+                        tg_edit(chat_id, menu_msg_id, "❌ Belum ada Range yang tersedia otomatis. Silahkan gunakan Input Manual Range.", kb)
                     continue
+
+                # --- BARU: PENANGANAN CALLBACK MANUAL RANGE ---
+                if data_cb == "manual_range":
+                    if user_id not in verified_users:
+                        tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
+                        continue
+                    
+                    manual_range_input.add(user_id)
+                    prompt_msg_text = (
+                        "<b>Input Manual Range</b>\n\n"
+                        "Silahkan kirim Range anda, contohnya:\n"
+                        "<code>2327600XXX</code>\n\n"
+                        "<i>(Pastikan format range sudah benar)</i>"
+                    )
+                    # Edit pesan yang sama untuk meminta input
+                    tg_edit(chat_id, menu_msg_id, prompt_msg_text) 
+                    
+                    # Simpan message_id untuk mengeditnya nanti dengan hasil
+                    pending_message[user_id] = menu_msg_id 
+                    continue
+                # --------------------------------------------------
                 
                 if data_cb.startswith("select_range:"):
                     if user_id not in verified_users:
@@ -610,4 +658,3 @@ if __name__ == "__main__":
         print("\n[INFO] Bot dimatikan oleh pengguna (KeyboardInterrupt).")
     except Exception as e:
         print(f"[FATAL] Kesalahan utama: {e}")
-
