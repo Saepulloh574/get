@@ -65,14 +65,14 @@ EMPTY_CHAR = "░"
 
 # Teks status berdasarkan langkah
 STATUS_MAP = {
-    0: "Menunggu di antrian...",
-    1: "Mengakses URL target...",
-    2: "Menunggu pemuatan halaman...",
-    3: "Memicu permintaan nomor...",
-    4: "Menunggu respons jaringan...",
-    5: "Mencari nomor (Siklus 1)...",
-    8: "Mencoba lagi (Siklus 2)...",
-    12: "Nomor ditemukan, memproses hasil...",
+    0:  "Menunggu di antrian sistem aktif..",
+    1:  "Mengakses alamat target web aktif.",
+    2:  "Menunggu pemuatan halaman web on..",
+    3:  "Mengirim permintaan nomor baru go.",
+    4:  "Menunggu respons dari jaringan ok.",
+    5:  "Mencari nomor pada siklus satu run",
+    8:  "Mencoba ulang pada siklus dua wait",
+    12: "Nomor ditemukan memproses data fin",
     15: "Finalisasi..."
 }
 
