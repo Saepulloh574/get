@@ -89,6 +89,7 @@ last_used_range = {}
 
 
 # --- FUNGSI UTILITAS MANAJEMEN FILE ---
+# (Semua fungsi utilitas file tetap sama)
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
@@ -171,6 +172,7 @@ def normalize_number(number):
 
 
 # --- FUNGSI UTILITAS TELEGRAM API ---
+# (Semua fungsi utilitas Telegram API tetap sama)
 
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
@@ -268,12 +270,14 @@ async def get_number_and_country(page):
         return None, None
 
 
-async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
-    """Memproses permintaan Get Number menggunakan Playwright dengan antrian Lock."""
+# MODIFIKASI: Menerima 'browser' bukan 'page'
+async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
+    """Memproses permintaan Get Number menggunakan Playwright dengan tab baru untuk setiap permintaan."""
     global GLOBAL_COUNTRY_EMOJI 
     global last_used_range 
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
+    page = None # Inisiasi page di luar try
 
     # --- Feedback Antrian ---
     if playwright_lock.locked():
@@ -291,8 +295,13 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
                 msg_id = tg_send(user_id, f"⏳ Sedang mengambil Number...\nRange: <code>{prefix}</code>")
                 if not msg_id: return
             
+            # Mendapatkan konteks dan membuat tab baru
+            context = browser.contexts[0]
+            page = await context.new_page() # <-- MEMBUKA TAB BARU
+            print(f"[DEBUG] Tab baru dibuka untuk user {user_id}")
+            
             # Update pesan jika sebelumnya hanya pesan antrian
-            tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang memuat URL...\nRange: <code>{prefix}</code>")
+            tg_edit(user_id, msg_id, f"✅ Antrian diterima. Sedang memuat URL di tab baru...\nRange: <code>{prefix}</code>")
             
             # 1. NAVIGASI KE URL BARU
             NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
@@ -346,7 +355,7 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
 
             if not number:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN. Coba lagi atau ganti range.")
-                return
+                return # PENTING: return di sini tidak melewati finally
 
             # 6. PENYIMPANAN & RESPON
             save_cache({"number": number, "country": country, "user_id": user_id, "time": time.time()})
@@ -382,11 +391,17 @@ async def process_user_input(page, user_id, prefix, message_id_to_edit=None):
             error_type = e.__class__.__name__
             print(f"[ERROR FATAL DIBLOKIR] Proses Playwright Gagal Total: {error_type} - {e}")
             if msg_id: tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan fatal ({error_type}). Mohon coba lagi atau hubungi admin.")
+        
+        # --- BLOK FINALLY: PASTIKAN TAB DITUTUP ---
+        finally:
+            if page:
+                await page.close()
+                print(f"[DEBUG] Tab untuk user {user_id} ditutup")
 
 
 # --- LOOP UTAMA TELEGRAM ---
-# ... (Sisanya dari fungsi telegram_loop, initialize_files, dan main tetap sama) ...
-async def telegram_loop(page):
+# MODIFIKASI: Menerima 'browser' bukan 'page'
+async def telegram_loop(browser):
     offset = 0
     while True:
         data = tg_get_updates(offset)
@@ -401,6 +416,8 @@ async def telegram_loop(page):
                 mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
                 text = msg.get("text", "")
 
+                # ... (Logika welcome, admin /add, admin input, /start tetap sama) ...
+                
                 # --- WELCOME MESSAGE ---
                 if "new_chat_members" in msg and chat_id == GROUP_ID_2:
                     for member in msg["new_chat_members"]:
@@ -493,7 +510,8 @@ async def telegram_loop(page):
                         continue
                     prefix = data_cb.split(":")[1]
                     tg_edit(chat_id, menu_msg_id, f"<b>Get Number</b>\n\nRange dipilih: <code>{prefix}</code>\n⏳ Sedang memproses...")
-                    await process_user_input(page, user_id, prefix, menu_msg_id)
+                    # MODIFIKASI: Meneruskan objek 'browser'
+                    await process_user_input(browser, user_id, prefix, menu_msg_id) 
                     continue
 
                 if data_cb.startswith("change_num:"):
@@ -505,7 +523,8 @@ async def telegram_loop(page):
                         tg_edit(chat_id, menu_msg_id, "❌ Tidak ada range terakhir yang tersimpan. Silakan pilih range baru melalui /start.")
                         return
                     tg_edit(chat_id, menu_msg_id, f"<b>Change Number</b>\n\nRange: <code>{prefix}</code>\n⏳ Sedang memproses ulang...")
-                    await process_user_input(page, user_id, prefix, menu_msg_id)
+                    # MODIFIKASI: Meneruskan objek 'browser'
+                    await process_user_input(browser, user_id, prefix, menu_msg_id) 
                     continue
                 
         await asyncio.sleep(0.5)
@@ -537,7 +556,6 @@ async def main():
     print("[INFO] Membersihkan pending updates dari Telegram API...")
     clear_pending_updates()
     
-    # GLOBAL_COUNTRY_EMOJI sudah diisi di awal, tidak perlu memuat
     print(f"[INFO] Memuat {len(GLOBAL_COUNTRY_EMOJI)} emoji negara dari hardcode.")
 
     sms_process = None
@@ -547,10 +565,11 @@ async def main():
     except Exception as e:
         print(f"[FATAL ERROR] Failed to start sms.py: {e}")
 
+    browser = None # Inisiasi browser
     try:
         async with async_playwright() as p:
             try:
-                # Menghubungkan ke instance Chrome yang ada (harus dijalankan dengan --remote-debugging-port=9222)
+                # Menghubungkan ke instance Chrome yang ada
                 browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             except Exception as e:
                 print(f"[ERROR] Gagal koneksi ke Chrome CDP: {e}")
@@ -558,24 +577,28 @@ async def main():
                 if sms_process and sms_process.poll() is None: sms_process.terminate()
                 return
 
-            context = browser.contexts[0]
-            if not context.pages:
-                 page = await context.new_page()
-                 print("[WARN] Membuka halaman Playwright baru.")
-            else:
-                 page = context.pages[0]
-                 
+            # Cek dan buka minimal satu halaman untuk memastikan konteks pertama ada
+            if not browser.contexts[0].pages:
+                 page = await browser.contexts[0].new_page()
+                 await page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
+                 print("[WARN] Membuka halaman Playwright awal di tab 1.")
+            
             print("[OK] Connected to existing Chrome via CDP on port 9222")
-            await page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
-
+            
+            # MODIFIKASI: Meneruskan objek 'browser'
             await asyncio.gather(
-                telegram_loop(page),
+                telegram_loop(browser), 
             )
 
     except Exception as e:
         print(f"[FATAL ERROR] An unexpected error occurred: {e}")
 
     finally:
+        if browser:
+            # Opsional: Menutup semua konteks jika browser dikontrol penuh
+            # await browser.close() 
+            pass 
+        
         if sms_process and sms_process.poll() is None:
             sms_process.terminate()
             print("[INFO] Terminated sms.py process.")
@@ -587,3 +610,4 @@ if __name__ == "__main__":
         print("\n[INFO] Bot dimatikan oleh pengguna (KeyboardInterrupt).")
     except Exception as e:
         print(f"[FATAL] Kesalahan utama: {e}")
+
