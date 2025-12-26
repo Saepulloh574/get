@@ -6,8 +6,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
 
 # ================= CONFIG =================
-TOKEN = "8384200905:AAEeotOVwG9FUkyG8WP8OyStCnDkiQQjuic"
-ADMIN_ID = 7557863856
+TOKEN = "7386979557:AAEXKl33CCcaQgKes3acF9HBSZGnwRWissk"
+ADMIN_ID = 7184123643
 OTP_FILE = "otp.json"
 
 # ================= DIRECTORIES =================
