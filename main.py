@@ -14,7 +14,7 @@ import math
 playwright_lock = asyncio.Lock()
 # ----------------------------------------------
 
-# --- DATA GLOBAL EMOJI NEGARA (DIGABUNGKAN) ---
+# --- DATA GLOBAL EMOJI NEGARA ---
 GLOBAL_COUNTRY_EMOJI = {
   "AFGHANISTAN": "🇦🇫", "ALBANIA": "🇦🇱", "ALGERIA": "🇩🇿", "ANDORRA": "🇦🇩", "ANGOLA": "🇦🇴",
   "ANTIGUA AND BARBUDA": "🇦🇬", "ARGENTINA": "🇦🇷", "ARMENIA": "🇦🇲", "AUSTRALIA": "🇦🇺", "AUSTRIA": "🇦🇹",
@@ -75,7 +75,7 @@ STATUS_MAP = {
     15: "Finalisasi..."
 }
 
-def get_progress_message(current_step, total_steps, prefix_range):
+def get_progress_message(current_step, total_steps, prefix_range, num_count):
     """Menghasilkan pesan progress bar baru."""
     progress_ratio = min(current_step / 15, 1.0)
     filled_count = math.ceil(progress_ratio * MAX_BAR_LENGTH)
@@ -91,14 +91,12 @@ def get_progress_message(current_step, total_steps, prefix_range):
             current_status = STATUS_MAP[5]
         elif current_step < 12:
             current_status = STATUS_MAP[8]
-        elif current_step < 15:
-            current_status = STATUS_MAP[12]
         else:
-            current_status = STATUS_MAP[15]
+            current_status = STATUS_MAP[12]
 
     return (
     f"<code>{current_status}</code>\n"
-    f"<blockquote>Range: <code>{prefix_range}</code></blockquote>\n"
+    f"<blockquote>Range: <code>{prefix_range}</code> | Jumlah: <code>{num_count}</code></blockquote>\n"
     f"<code>Load:</code> [{progress_bar}]"
 )
 # ---------------------------------------------------------
@@ -141,9 +139,8 @@ last_used_range = {}
 
 
 # --- FUNGSI UTILITAS MANAJEMEN FILE ---
-
+# ... (load_users, save_users, load_cache, save_cache, is_in_cache, load_inline_ranges, save_inline_ranges, generate_inline_keyboard, load_wait_list, save_wait_list, add_to_wait_list tetap sama)
 def load_users():
-    """Memuat semua ID pengguna yang terverifikasi dari user.json."""
     if os.path.exists(USER_FILE):
         with open(USER_FILE, "r") as f:
             try:
@@ -153,7 +150,6 @@ def load_users():
     return set()
 
 def save_users(user_id):
-    """Menyimpan ID pengguna baru ke user.json."""
     users = load_users()
     if user_id not in users:
         users.add(user_id)
@@ -179,7 +175,9 @@ def save_cache(number_entry):
 
 def is_in_cache(number):
     cache = load_cache()
-    return any(entry["number"] == number for entry in cache)
+    # Pastikan nomor di cache juga dinormalisasi untuk perbandingan
+    normalized_number = normalize_number(number) 
+    return any(normalize_number(entry["number"]) == normalized_number for entry in cache)
 
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
@@ -235,7 +233,8 @@ def add_to_wait_list(number, user_id):
         save_wait_list(wait_list)
 
 def normalize_number(number):
-    normalized_number = number.strip().replace(" ", "").replace("-", "")
+    """Memastikan nomor selalu diawali dengan '+'."""
+    normalized_number = str(number).strip().replace(" ", "").replace("-", "")
     if not normalized_number.startswith('+'):
         normalized_number = '+' + normalized_number
     return normalized_number
@@ -243,6 +242,7 @@ def normalize_number(number):
 
 
 # --- FUNGSI UTILITAS TELEGRAM API ---
+# ... (tg_send, tg_edit, tg_delete, tg_send_action, tg_get_updates, is_user_in_group, is_user_in_both_groups, clear_pending_updates, tg_broadcast, action_task tetap sama)
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
@@ -251,10 +251,10 @@ def tg_send(chat_id, text, reply_markup=None):
         r = requests.post(f"{API}/sendMessage", json=data).json()
         if r.get("ok"):
             return r["result"]["message_id"]
-        print(f"[ERROR SEND] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
+        # print(f"[ERROR SEND] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
         return None
     except Exception as e:
-        print(f"[ERROR SEND REQUEST] {e}")
+        # print(f"[ERROR SEND REQUEST] {e}")
         return None
 
 def tg_edit(chat_id, message_id, text, reply_markup=None):
@@ -265,28 +265,26 @@ def tg_edit(chat_id, message_id, text, reply_markup=None):
         r = requests.post(f"{API}/editMessageText", json=data).json()
         if not r.get("ok"):
             if "message is not modified" not in r.get("description", ""):
-                 print(f"[ERROR EDIT] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
+                 pass # print(f"[ERROR EDIT] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
     except Exception as e:
-        print(f"[ERROR EDIT REQUEST] {e}")
+        pass # print(f"[ERROR EDIT REQUEST] {e}")
 
 def tg_delete(chat_id, message_id):
-    """Menghapus pesan berdasarkan chat_id dan message_id."""
     data = {"chat_id": chat_id, "message_id": message_id}
     try:
         r = requests.post(f"{API}/deleteMessage", json=data).json()
         if not r.get("ok"):
              if "message to delete not found" not in r.get("description", ""):
-                 print(f"[ERROR DELETE] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
+                 pass # print(f"[ERROR DELETE] {r.get('description', 'Unknown Error')} for chat_id {chat_id}")
     except Exception as e:
-        print(f"[ERROR DELETE REQUEST] {e}")
+        pass # print(f"[ERROR DELETE REQUEST] {e}")
 
 def tg_send_action(chat_id, action="typing"):
-    """Mengirim status chat action (misalnya, 'typing') ke pengguna."""
     data = {"chat_id": chat_id, "action": action}
     try:
         requests.post(f"{API}/sendChatAction", data=data)
     except Exception as e:
-        print(f"[ERROR SEND ACTION] {e}")
+        pass # print(f"[ERROR SEND ACTION] {e}")
 
 def tg_get_updates(offset):
     try:
@@ -313,7 +311,6 @@ def is_user_in_both_groups(user_id):
     return is_member_1 and is_member_2
 
 def clear_pending_updates():
-    """Mengabaikan semua update Telegram yang tertunda."""
     try:
         r = requests.get(f"{API}/getUpdates", params={"offset": -1, "timeout": 1}).json()
         if r.get("ok") and r.get("result"):
@@ -327,16 +324,13 @@ def clear_pending_updates():
         print(f"[ERROR CLEAR UPDATES] Gagal membersihkan pending updates: {e}")
 
 async def tg_broadcast(message_text, admin_id):
-    """Mengirim pesan siaran ke semua pengguna yang tersimpan."""
     user_ids = list(load_users())
     success_count = 0
     fail_count = 0
     
-    # Kirim pesan progress ke Admin
     admin_msg_id = tg_send(admin_id, f"🔄 Memulai siaran ke **{len(user_ids)}** pengguna. Harap tunggu...")
 
     for i, user_id in enumerate(user_ids):
-        # Memperbarui progress setiap 10 pesan
         if i % 10 == 0 and admin_msg_id:
              try:
                  tg_edit(admin_id, admin_msg_id, f"🔄 Siaran: **{i}/{len(user_ids)}** (Sukses: {success_count}, Gagal: {fail_count})")
@@ -350,7 +344,6 @@ async def tg_broadcast(message_text, admin_id):
             fail_count += 1
         await asyncio.sleep(0.05) 
 
-    # Pesan akhir ke Admin
     final_msg = (
         f"✅ Siaran Selesai!\n\n"
         f"👥 Total Pengguna: **{len(user_ids)}**\n"
@@ -362,137 +355,128 @@ async def tg_broadcast(message_text, admin_id):
     else:
         tg_send(admin_id, final_msg)
 
-# --- FUNGSI ASYNC UNTUK MENGIRIM CHAT ACTION ---
 async def action_task(chat_id, action_interval=4.5):
-    """Mengirim status chat action berulang kali untuk ilusi 'typing...'."""
     while True:
         tg_send_action(chat_id, action="typing") 
         await asyncio.sleep(action_interval) 
 
 # --- FUNGSI PLAYWRIGHT ASYNC ---
-async def get_number_and_country(page):
+async def get_number_and_country_from_row(row_selector, page):
     """
-    Mengambil nomor terbaru dari tabel, menggunakan selektor baru
-    berdasarkan HTML yang disediakan.
+    Mengambil data (nomor dan negara) dari satu baris tabel 
+    berdasarkan selektor CSS baris (misalnya 'tbody tr:first-child').
     """
     try:
-        # Cari baris pertama (terbaru) dalam tabel body
-        row = await page.query_selector("tbody tr:first-child") 
-        if not row: return None, None
-            
+        row = await page.query_selector(row_selector) 
+        if not row: return None, None, None # Return 3 nilai (nomor, negara, status)
+
         # 1. MENGAMBIL NOMOR: span dengan kelas 'font-mono' di kolom pertama
         phone_el = await row.query_selector("td:nth-child(1) span.font-mono")
-        if not phone_el: return None, None
-
-        number = (await phone_el.inner_text()).strip()
+        number_raw = (await phone_el.inner_text()).strip() if phone_el else None
         
-        if is_in_cache(number): return None, None 
+        number = normalize_number(number_raw) if number_raw else None
+        
+        if not number or is_in_cache(number): return None, None, None 
         
         # 2. MENGAMBIL STATUS: span di td pertama/div kedua
         status_el = await row.query_selector("td:nth-child(1) div:nth-child(2) span")
-        if status_el:
-             status_text = (await status_el.inner_text()).strip().lower()
-             # Abaikan jika status sudah final (success/failed)
-             if "success" in status_text or "failed" in status_text: return None, None
+        status_text = (await status_el.inner_text()).strip().lower() if status_el else "unknown"
+        
+        # Abaikan jika status sudah final (success/failed)
+        if "success" in status_text or "failed" in status_text: return None, None, None
         
         # 3. MENGAMBIL NEGARA: span dengan kelas 'text-slate-200' di td kedua
         country_el = await row.query_selector("td:nth-child(2) span.text-slate-200")
         country = (await country_el.inner_text()).strip().upper() if country_el else "UNKNOWN"
 
-        if number and len(number) > 5: return number, country 
-        return None, None
+        if len(number) > 5: return number, country, status_text
+        return None, None, None
         
     except Exception as e:
-        print(f"[ERROR PARSING TABLE] Gagal memparsing data tabel: {e}")
-        return None, None
+        # print(f"[ERROR PARSING ROW {row_selector}] Gagal memparsing data tabel: {e}")
+        return None, None, None
 
-async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
-    """Memproses permintaan Get Number menggunakan Playwright dengan tab baru untuk setiap permintaan."""
+async def process_user_input(browser, user_id, prefix, click_count, message_id_to_edit=None):
+    """Memproses permintaan Get Number dengan jumlah klik (1 atau 3) yang ditentukan."""
     global GLOBAL_COUNTRY_EMOJI 
     global last_used_range 
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
     page = None
     action_loop_task = None 
+    
+    num_to_fetch = click_count # Jumlah nomor yang dicari
 
     # --- Feedback Antrian ---
     if playwright_lock.locked():
         if not msg_id:
-            msg_id = tg_send(user_id, get_progress_message(0, 0, prefix))
+            msg_id = tg_send(user_id, get_progress_message(0, 0, prefix, num_to_fetch))
             if not msg_id: return
         else:
-            tg_edit(user_id, msg_id, get_progress_message(0, 0, prefix))
+            tg_edit(user_id, msg_id, get_progress_message(0, 0, prefix, num_to_fetch))
 
     # --- Lock Utama Playwright ---
     async with playwright_lock:
         
         try:
-            # 1. Start Chat Action 
             action_loop_task = asyncio.create_task(action_task(user_id))
-            
             current_step = 0 
             
-            # --- Inisialisasi Pesan Awal ---
             if not msg_id:
-                msg_id = tg_send(user_id, get_progress_message(current_step, 0, prefix))
+                msg_id = tg_send(user_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
                 if not msg_id: return
             
-            # Mendapatkan konteks dan membuat tab baru
             context = browser.contexts[0]
             page = await context.new_page() 
-            print(f"[DEBUG] Tab baru dibuka untuk user {user_id}")
+            print(f"[DEBUG] Tab baru dibuka untuk user {user_id} (Count: {num_to_fetch})")
             
             # 1. NAVIGASI KE URL BARU
             NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
             await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=30000)
             current_step = 1 
-            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
+            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
             
-            # --- Jeda 3 Detik di sini ---
             await asyncio.sleep(3) 
             current_step = 2 
-            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
+            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
 
-            # 2. TUNGGU TOMBOL SIAP DAN KLIK (Awal)
-            # Menggunakan selektor teks yang stabil
+            # 2. TUNGGU TOMBOL SIAP DAN KLIK SEJUMLAH 'click_count'
             BUTTON_SELECTOR = "button:has-text('Get Number')" 
             await page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=15000)
-            await page.click(BUTTON_SELECTOR, force=True)
-            current_step = 3 
-            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
-            # 3. TUNGGU PEMUATAN DAN PENCARIAN (Awal)
+            for i in range(click_count):
+                await page.click(BUTTON_SELECTOR, force=True)
+                # Jeda sebentar antar klik
+                await asyncio.sleep(0.5) 
+            
+            current_step = 3 
+            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
+            
+            # 3. TUNGGU PEMUATAN DAN PENCARIAN
             await asyncio.sleep(1) 
             current_step = 4 
-            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
+            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
             
-            # Ganti networkidle (yang sering timeout) dengan jeda statis yang singkat
             await asyncio.sleep(2) 
             
-            # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
-            # Durasi pencarian di perpanjang sedikit karena tidak ada lagi networkidle
+            # 4. MULAI MENCARI NOMOR (Siklus 1 & 2)
             delay_duration_round_1 = 6.0 
             delay_duration_round_2 = 6.0
             
             progress_update_interval = 0.2 
-            check_number_interval = 0.5 # Mempercepat pengecekan data
+            check_number_interval = 0.5 
             
-            number = None
-            country = None
+            found_numbers = [] # List untuk menyimpan 1 atau 3 nomor yang ditemukan
             
             for round_num, duration in enumerate([delay_duration_round_1, delay_duration_round_2]):
                 
                 if round_num == 0:
                     current_step = 5 
                 elif round_num == 1:
-                    if not number: 
-                        # Klik ulang tombol Get Number
+                    if len(found_numbers) < num_to_fetch: 
+                        # Klik ulang 1 kali jika belum dapat nomor sesuai target
                         await page.click(BUTTON_SELECTOR, force=True) 
-                        await asyncio.sleep(1) 
-                        
-                        # Ganti networkidle dengan jeda statis
-                        await asyncio.sleep(2) 
-                        
+                        await asyncio.sleep(3) # Tunggu lebih lama untuk retry
                         current_step = 8 
                 
                 start_time = time.time()
@@ -503,50 +487,84 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                     current_time = time.time()
                     
                     if current_time - last_number_check_time >= check_number_interval:
-                        number, country = await get_number_and_country(page)
+                        
+                        # Cek dari baris 1 hingga baris ke-N (sesuai num_to_fetch)
+                        current_numbers = []
+                        all_countries = set() # Untuk menyimpan negara yang ditemukan
+                        
+                        for i in range(1, num_to_fetch + 1):
+                            row_selector = f"tbody tr:nth-child({i})"
+                            number, country, status = await get_number_and_country_from_row(row_selector, page)
+                            
+                            if number and number not in [n['number'] for n in current_numbers]:
+                                current_numbers.append({'number': number, 'country': country})
+                                all_countries.add(country)
+
+                        found_numbers = current_numbers
                         last_number_check_time = current_time 
-                        if number:
-                            # Menyesuaikan langkah akhir jika nomor ditemukan di tengah siklus
+                        
+                        if len(found_numbers) >= num_to_fetch:
                             current_step = 12
                             break
                     
                     # Update progress
                     current_step += 1
-                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
+                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
                     
                     await asyncio.sleep(progress_update_interval) 
                     
-                if number: break
+                if len(found_numbers) >= num_to_fetch: break
 
-            # 6. PENYIMPANAN & RESPON
+            # 5. PENYIMPANAN & RESPON
             
-            if not number:
+            if not found_numbers:
                 tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN. Coba lagi atau ganti range.")
                 return 
 
-            if number:
+            # Ambil negara dari nomor pertama yang ditemukan (asumsi semua nomor dalam satu range berasal dari negara yang sama)
+            main_country = found_numbers[0]['country'] if found_numbers else "UNKNOWN"
+
+            if found_numbers:
                 while current_step < 15:
                     current_step += 1
-                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
+                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
                     await asyncio.sleep(0.1) 
 
-            save_cache({"number": number, "country": country, "user_id": user_id, "time": time.time()})
-            add_to_wait_list(number, user_id)
+            # Simpan semua nomor yang ditemukan ke cache dan wait list
+            for entry in found_numbers:
+                save_cache({"number": entry['number'], "country": entry['country'], "user_id": user_id, "time": time.time()})
+                add_to_wait_list(entry['number'], user_id)
+            
             last_used_range[user_id] = prefix 
 
-            emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️") 
-            msg = (
-                "✅ The number is ready\n\n"
-                f"📞 Number  : <code>{number}</code>\n"
-                f"{emoji} COUNTRY : {country}\n"
+            emoji = GLOBAL_COUNTRY_EMOJI.get(main_country, "🗺️") 
+            
+            # --- Pembentukan Pesan Output ---
+            msg = "✅ The number is ready\n\n"
+            
+            if num_to_fetch == 1:
+                num_data = found_numbers[0]
+                msg += f"📞 Number  : <code>{num_data['number']}</code>\n"
+            elif num_to_fetch == 3:
+                for idx, num_data in enumerate(found_numbers[:3]):
+                    msg += f"📞 Number {idx+1} : <code>{num_data['number']}</code>\n"
+            
+            msg += (
+                f"{emoji} COUNTRY : {main_country}\n"
                 f"🏷️ Range   : <code>{prefix}</code>\n\n"
                 "<b>🤖 Number available please use.</b>\n"
                 "<b>Waiting for OTP....</b>"
             )
+            # --- Akhir Pembentukan Pesan Output ---
 
+
+            # --- Keyboard Inline Baru ---
             inline_kb = {
                 "inline_keyboard": [
-                    [{"text": "🔄 Change Number", "callback_data": f"change_num:{prefix}"}],
+                    [
+                        {"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"},
+                        {"text": "🔄 Change 3 Number", "callback_data": f"change_num:3:{prefix}"}
+                    ],
                     [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
                 ]
             }
@@ -654,14 +672,15 @@ async def telegram_loop(browser):
                     manual_range_input.remove(user_id) 
                     prefix = text.strip()
                     menu_msg_id = pending_message.pop(user_id, None)
+                    num_to_fetch = 1 # Default saat input manual, kita ambil 1 nomor
 
                     if re.match(r"^\+?\d{3,15}[Xx*#]+$", prefix, re.IGNORECASE):
                         if menu_msg_id:
-                            tg_edit(chat_id, menu_msg_id, get_progress_message(0, 0, prefix)) 
+                            tg_edit(chat_id, menu_msg_id, get_progress_message(0, 0, prefix, num_to_fetch)) 
                         else:
-                            menu_msg_id = tg_send(chat_id, get_progress_message(0, 0, prefix))
+                            menu_msg_id = tg_send(chat_id, get_progress_message(0, 0, prefix, num_to_fetch))
 
-                        await process_user_input(browser, user_id, prefix, menu_msg_id)
+                        await process_user_input(browser, user_id, prefix, num_to_fetch, menu_msg_id)
                     else:
                         error_msg = "❌ Format Range tidak valid. Contoh format: <code>2327600XXX</code>. Silakan coba lagi."
                         if menu_msg_id:
@@ -741,27 +760,37 @@ async def telegram_loop(browser):
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
                         continue
                     prefix = data_cb.split(":")[1]
-                    
+                    num_to_fetch = 1 # Default saat memilih range
+
                     current_step = 0
-                    message = get_progress_message(current_step, 0, prefix)
+                    message = get_progress_message(current_step, 0, prefix, num_to_fetch)
                     tg_edit(chat_id, menu_msg_id, message) 
 
-                    await process_user_input(browser, user_id, prefix, menu_msg_id) 
+                    await process_user_input(browser, user_id, prefix, num_to_fetch, menu_msg_id) 
                     continue
 
-                # --- CALLBACK CHANGE NUMBER ---
+                # --- CALLBACK CHANGE NUMBER (1 atau 3) ---
                 if data_cb.startswith("change_num:"):
                     if user_id not in verified_users:
                         tg_edit(chat_id, menu_msg_id, "⚠️ Harap verifikasi dulu.")
                         return
-                    prefix = data_cb.split(":")[1]
+                    
+                    parts = data_cb.split(":")
+                    if len(parts) != 3:
+                        tg_edit(chat_id, menu_msg_id, "❌ Format tombol Change Number tidak valid.")
+                        return
+
+                    num_to_fetch = int(parts[1]) # 1 atau 3
+                    prefix = parts[2]
+                    
                     if not prefix:
                         tg_edit(chat_id, menu_msg_id, "❌ Tidak ada range terakhir yang tersimpan. Silakan pilih range baru melalui /start.")
                         return
                     
+                    # Hapus pesan lama dan mulai proses baru
                     tg_delete(chat_id, menu_msg_id)
                     
-                    await process_user_input(browser, user_id, prefix) 
+                    await process_user_input(browser, user_id, prefix, num_to_fetch) 
                     continue
                 
         await asyncio.sleep(0.5)
@@ -774,7 +803,6 @@ def initialize_files():
                 f.write(default_content)
             print(f"[INFO] File {file} dibuat.")
 
-    # BERSIHKAN WAIT LIST SAAT START
     if os.path.exists(WAIT_FILE):
         os.remove(WAIT_FILE)
         print(f"[INFO] File {WAIT_FILE} dibersihkan/dihapus saat startup.")
@@ -814,7 +842,6 @@ async def main():
                 if sms_process and sms_process.poll() is None: sms_process.terminate()
                 return
 
-            # Cek dan buka minimal satu halaman untuk memastikan konteks pertama ada
             if not browser.contexts[0].pages:
                  page = await browser.contexts[0].new_page()
                  await page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
@@ -822,7 +849,6 @@ async def main():
             
             print("[OK] Connected to existing Chrome via CDP on port 9222")
             
-            # Meneruskan objek 'browser'
             await asyncio.gather(
                 telegram_loop(browser), 
             )
