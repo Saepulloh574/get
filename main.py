@@ -558,16 +558,15 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
             # --- Akhir Pembentukan Pesan Output ---
 
 
-            # --- Keyboard Inline Baru ---
-            inline_kb = {
-                "inline_keyboard": [
-                    [
-                        {"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"},
-                        {"text": "🔄 Change 3 Number", "callback_data": f"change_num:3:{prefix}"}
-                    ],
-                    [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
-                ]
-            }
+# Setelah (Vertikal)
+inline_kb = {
+    "inline_keyboard": [
+        [{"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"}],
+        [{"text": "🔄 Change 3 Number", "callback_data": f"change_num:3:{prefix}"}],
+        [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}]
+    ]
+}
+
 
             # --- Pesan Akhir (Berhasil) ---
             tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
