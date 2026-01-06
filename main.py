@@ -29,7 +29,7 @@ GLOBAL_COUNTRY_EMOJI = {
   "EGYPT": "🇪🇬", "EL SALVADOR": "🇸🇻", "EQUATORIAL GUINEA": "🇬🇶", "ERITREA": "🇪🇷", "ESTONIA": "🇪🇪",
   "ESWATINI": "🇸🇿", "ETHIOPIA": "🇪🇹", "FIJI": "🇫🇯", "FINLAND": "🇫🇮", "FRANCE": "🇫🇷",
   "GABON": "🇬🇦", "GAMBIA": "🇬🇲", "GEORGIA": "🇬🇪", "GERMANY": "🇩🇪", "GHANA": "🇬🇭",
-  "GREECE": "🇬🇷", "GRENADA": "🇬🇩", "GUATEMALA": "🇬🇹", "GUINEA": "🇬🇳", "GUINEA-BISSAU": "🇬🇼",
+  "GREECE": "🇬🇷", "GRENADA": "🇬🇹", "GUATEMALA": "🇬🇹", "GUINEA": "🇬🇳", "GUINEA-BISSAU": "🇬🇼",
   "GUYANA": "🇬🇾", "HAITI": "🇭🇹", "HONDURAS": "🇭🇳", "HUNGARY": "🇭🇺", "ICELAND": "🇮🇸",
   "INDIA": "🇮🇳", "INDONESIA": "🇮🇩", "IRAN": "🇮🇷", "IRAQ": "🇮🇶", "IRELAND": "🇮🇪",
   "ISRAEL": "🇮🇱", "ITALY": "🇮🇹", "JAMAICA": "🇯🇲", "JAPAN": "🇯🇵", "JORDAN": "🇯🇴",
@@ -120,7 +120,7 @@ BASE_WEB_URL = "https://x.mnitnetwork.com/mdashboard/getnum"
 # ----------------------------------
 
 # --- KONSTANTA FILE ---
-USER_FILE = "user.json" # File untuk menyimpan semua ID pengguna yang terverifikasi
+USER_FILE = "user.json" 
 CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
@@ -447,8 +447,11 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
 
             # 2. TUNGGU TOMBOL SIAP DAN KLIK (Awal)
-            await page.wait_for_selector("#getNumberBtn", state='visible', timeout=15000)
-            await page.click("#getNumberBtn", force=True)
+            # --- PERUBAHAN SELEKTOR DI SINI ---
+            BUTTON_SELECTOR = "button:has-text('Get Number')" 
+            await page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=15000)
+            await page.click(BUTTON_SELECTOR, force=True)
+            # ----------------------------------
             current_step = 3 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
@@ -475,7 +478,9 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                     current_step = 5 
                 elif round_num == 1:
                     if not number: 
-                        await page.click("#getNumberBtn", force=True)
+                        # --- PERUBAHAN SELEKTOR DI SINI (Klik Ulang) ---
+                        await page.click(BUTTON_SELECTOR, force=True) 
+                        # ---------------------------------------------
                         await asyncio.sleep(1) 
                         await page.wait_for_load_state('networkidle', timeout=15000)
                         await asyncio.sleep(2) 
