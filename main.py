@@ -373,30 +373,39 @@ async def action_task(chat_id, action_interval=4.5):
 
 # --- FUNGSI PLAYWRIGHT ASYNC ---
 async def get_number_and_country(page):
-    """Mengambil nomor terbaru dari tabel, jika belum di cache dan status belum final."""
+    """
+    Mengambil nomor terbaru dari tabel, menggunakan selektor baru
+    berdasarkan HTML yang disediakan.
+    """
     try:
+        # Cari baris pertama (terbaru) dalam tabel body
         row = await page.query_selector("tbody tr:first-child") 
         if not row: return None, None
             
-        phone_el = await row.query_selector(".phone-number")
+        # 1. MENGAMBIL NOMOR: span dengan kelas 'font-mono' (nomor berada di td pertama)
+        phone_el = await row.query_selector("td:nth-child(1) span.font-mono")
         if not phone_el: return None, None
 
         number = (await phone_el.inner_text()).strip()
         
         if is_in_cache(number): return None, None 
         
-        status_el = await row.query_selector("td:nth-child(3) .badge")
+        # 2. MENGAMBIL STATUS: span di td pertama/div kedua
+        status_el = await row.query_selector("td:nth-child(1) div:nth-child(2) span")
         if status_el:
              status_text = (await status_el.inner_text()).strip().lower()
+             # Abaikan jika status sudah final (success/failed)
              if "success" in status_text or "failed" in status_text: return None, None
         
-        country_el = await row.query_selector(".badge.bg-primary")
+        # 3. MENGAMBIL NEGARA: span dengan kelas 'text-slate-200' di td kedua
+        country_el = await row.query_selector("td:nth-child(2) span.text-slate-200")
         country = (await country_el.inner_text()).strip().upper() if country_el else "UNKNOWN"
 
         if number and len(number) > 5: return number, country 
         return None, None
         
     except Exception as e:
+        print(f"[ERROR PARSING TABLE] Gagal memparsing data tabel: {e}")
         return None, None
 
 async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
@@ -447,11 +456,10 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
 
             # 2. TUNGGU TOMBOL SIAP DAN KLIK (Awal)
-            # --- PERUBAHAN SELEKTOR DI SINI ---
+            # Menggunakan selektor teks yang stabil
             BUTTON_SELECTOR = "button:has-text('Get Number')" 
             await page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=15000)
             await page.click(BUTTON_SELECTOR, force=True)
-            # ----------------------------------
             current_step = 3 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
@@ -478,9 +486,8 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                     current_step = 5 
                 elif round_num == 1:
                     if not number: 
-                        # --- PERUBAHAN SELEKTOR DI SINI (Klik Ulang) ---
+                        # Klik ulang tombol Get Number
                         await page.click(BUTTON_SELECTOR, force=True) 
-                        # ---------------------------------------------
                         await asyncio.sleep(1) 
                         await page.wait_for_load_state('networkidle', timeout=15000)
                         await asyncio.sleep(2) 
