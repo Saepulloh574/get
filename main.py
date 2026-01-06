@@ -68,7 +68,7 @@ STATUS_MAP = {
     1:  "Mengakses alamat target web aktif.",
     2:  "Menunggu pemuatan halaman web on..",
     3:  "Mengirim permintaan nomor baru go.",
-    4:  "Menunggu respons dari jaringan ok.",
+    4:  "Memulai pencarian di tabel data..",
     5:  "Mencari nomor pada siklus satu run",
     8:  "Mencoba ulang pada siklus dua wait",
     12: "Nomor ditemukan memproses data fin",
@@ -115,9 +115,7 @@ except (TypeError, ValueError) as e:
     sys.exit(1)
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-# --- PERUBAHAN URL YANG DIMINTA ---
 BASE_WEB_URL = "https://x.mnitnetwork.com/mdashboard/getnum" 
-# ----------------------------------
 
 # --- KONSTANTA FILE ---
 USER_FILE = "user.json" 
@@ -382,7 +380,7 @@ async def get_number_and_country(page):
         row = await page.query_selector("tbody tr:first-child") 
         if not row: return None, None
             
-        # 1. MENGAMBIL NOMOR: span dengan kelas 'font-mono' (nomor berada di td pertama)
+        # 1. MENGAMBIL NOMOR: span dengan kelas 'font-mono' di kolom pertama
         phone_el = await row.query_selector("td:nth-child(1) span.font-mono")
         if not phone_el: return None, None
 
@@ -463,19 +461,21 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
             current_step = 3 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
             
-            # 3. TUNGGU PEMUATAN JARINGAN & PENCARIAN (Awal)
+            # 3. TUNGGU PEMUATAN DAN PENCARIAN (Awal)
             await asyncio.sleep(1) 
             current_step = 4 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
-            await page.wait_for_load_state('networkidle', timeout=15000) 
+            
+            # Ganti networkidle (yang sering timeout) dengan jeda statis yang singkat
             await asyncio.sleep(2) 
             
             # 5. MULAI MENCARI NOMOR (Siklus 1 & 2)
-            delay_duration_round_1 = 5.0 
-            delay_duration_round_2 = 5.0
+            # Durasi pencarian di perpanjang sedikit karena tidak ada lagi networkidle
+            delay_duration_round_1 = 6.0 
+            delay_duration_round_2 = 6.0
             
             progress_update_interval = 0.2 
-            check_number_interval = 1.0 
+            check_number_interval = 0.5 # Mempercepat pengecekan data
             
             number = None
             country = None
@@ -489,8 +489,10 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                         # Klik ulang tombol Get Number
                         await page.click(BUTTON_SELECTOR, force=True) 
                         await asyncio.sleep(1) 
-                        await page.wait_for_load_state('networkidle', timeout=15000)
+                        
+                        # Ganti networkidle dengan jeda statis
                         await asyncio.sleep(2) 
+                        
                         current_step = 8 
                 
                 start_time = time.time()
@@ -504,9 +506,11 @@ async def process_user_input(browser, user_id, prefix, message_id_to_edit=None):
                         number, country = await get_number_and_country(page)
                         last_number_check_time = current_time 
                         if number:
-                            current_step = math.ceil( (time.time() - start_time) * (15/10) ) + (5 if round_num == 0 else 8)
+                            # Menyesuaikan langkah akhir jika nomor ditemukan di tengah siklus
+                            current_step = 12
                             break
                     
+                    # Update progress
                     current_step += 1
                     tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix))
                     
