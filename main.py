@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import json
 import os
 import requests
@@ -48,7 +48,7 @@ GLOBAL_COUNTRY_EMOJI = {
   "SAINT VINCENT AND THE GRENADINES": "🇻🇨", "SAMOA": "🇼🇸", "SAN MARINO": "🇸🇲", "SAO TOME AND PRINCIPE": "🇸🇹",
   "SAUDI ARABIA": "🇸🇦", "SENEGAL": "🇸🇳", "SERBIA": "🇷🇸", "SEYCHELLES": "🇸🇨", "SIERRA LEONE": "🇸🇱",
   "SINGAPORE": "🇸🇬", "SLOVAKIA": "🇸🇰", "SLOVENIA": "🇸🇮", "SOLOMON ISLANDS": "🇸🇧", "SOMALIA": "🇸🇴",
-  "SOUTH AFRICA": "🇿🇦", "SOUTH KOREA": "🇰🇷", "SOUTH SUDAN": "🇸🇸", "SPAIN": "🇪🇸", "SRI LANKA": "🇸🇱", # Perbaikan: Sierra Leone sudah ada, ini tetap.
+  "SOUTH AFRICA": "🇿🇦", "SOUTH KOREA": "🇰🇷", "SOUTH SUDAN": "🇸🇸", "SPAIN": "🇪🇸", "SRI LANKA": "🇱🇰", 
   "SUDAN": "🇸🇩", "SURINAME": "🇸🇷", "SWEDEN": "🇸🇪", "SWITZERLAND": "🇨🇭", "SYRIA": "🇸🇾",
   "TAJIKISTAN": "🇹🇯", "TANZANIA": "🇹🇿", "THAILAND": "🇹🇭", "TIMOR-LESTE": "🇹🇱", "TOGO": "🇹🇬",
   "TONGA": "🇹🇴", "TRINIDAD AND TOBAGO": "🇹🇹", "TUNISIA": "🇹🇳", "TURKEY": "🇹🇷", "TURKMENISTAN": "🇹🇲",
@@ -351,36 +351,67 @@ async def action_task(chat_id, action_interval=4.5):
         tg_send_action(chat_id, action="typing") 
         await asyncio.sleep(action_interval) 
 
-# --- FUNGSI PLAYWRIGHT ASYNC ---
+# --- FUNGSI PLAYWRIGHT ASYNC (OPTIMIZED) ---
 async def get_number_and_country_from_row(row_selector, page):
     """
     Mengambil data (nomor dan negara) dari satu baris tabel 
-    berdasarkan selektor CSS baris (misalnya 'tbody tr:first-child').
+    berdasarkan selektor CSS baris. Menggunakan locator Playwright yang lebih cepat.
     """
     try:
-        row = await page.query_selector(row_selector) 
-        if not row: return None, None, None 
+        row = page.locator(row_selector) 
+        if not await row.is_visible(): return None, None, None 
 
-        phone_el = await row.query_selector("td:nth-child(1) span.font-mono")
-        number_raw = (await phone_el.inner_text()).strip() if phone_el else None
+        # Menggunakan locator.inner_text() untuk ekstraksi yang lebih andal dan cepat
+        
+        phone_el = row.locator("td:nth-child(1) span.font-mono")
+        # Menggunakan all_inner_texts() untuk mengambil teks dari semua elemen yang cocok (walau biasanya 1)
+        number_raw_list = await phone_el.all_inner_texts()
+        number_raw = number_raw_list[0].strip() if number_raw_list else None
         
         number = normalize_number(number_raw) if number_raw else None
         
         if not number or is_in_cache(number): return None, None, None 
         
-        status_el = await row.query_selector("td:nth-child(1) div:nth-child(2) span")
-        status_text = (await status_el.inner_text()).strip().lower() if status_el else "unknown"
-        
+        # Ekstraksi Status
+        status_el = row.locator("td:nth-child(1) div:nth-child(2) span")
+        status_text_list = await status_el.all_inner_texts()
+        status_text = status_text_list[0].strip().lower() if status_text_list else "unknown"
+
         if "success" in status_text or "failed" in status_text: return None, None, None
         
-        country_el = await row.query_selector("td:nth-child(2) span.text-slate-200")
-        country = (await country_el.inner_text()).strip().upper() if country_el else "UNKNOWN"
+        # Ekstraksi Negara
+        country_el = row.locator("td:nth-child(2) span.text-slate-200")
+        country_list = await country_el.all_inner_texts()
+        country = country_list[0].strip().upper() if country_list else "UNKNOWN"
 
         if number and len(number) > 5: return number, country, status_text
         return None, None, None
         
     except Exception as e:
         return None, None, None
+
+async def get_all_numbers_parallel(page, num_to_fetch):
+    """
+    Mengambil data dari beberapa baris secara paralel menggunakan 
+    asyncio.gather untuk memanggil fungsi ekstraksi Playwright secara bersamaan.
+    """
+    tasks = []
+    # Membuat tugas untuk memeriksa 5 baris pertama (lebih dari yang diminta, untuk jaga-jaga)
+    for i in range(1, num_to_fetch + 4): 
+        row_selector = f"tbody tr:nth-child({i})"
+        tasks.append(get_number_and_country_from_row(row_selector, page))
+    
+    # Menjalankan semua tugas secara paralel
+    results = await asyncio.gather(*tasks)
+    
+    current_numbers = []
+    
+    for number, country, status in results:
+        if number and number not in [n['number'] for n in current_numbers]:
+            current_numbers.append({'number': number, 'country': country})
+
+    return current_numbers
+
 
 async def process_user_input(browser, user_id, prefix, click_count, message_id_to_edit=None):
     """Memproses permintaan Get Number dengan jumlah klik (1 atau 3) yang ditentukan."""
@@ -405,6 +436,7 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
         try:
             action_loop_task = asyncio.create_task(action_task(user_id))
             current_step = 0 
+            start_operation_time = time.time()
             
             if not msg_id:
                 msg_id = tg_send(user_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
@@ -414,35 +446,41 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
             page = await context.new_page() 
             
             NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
-            await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=30000)
+            # MODIFIKASI: Mengurangi timeout Playwright
+            await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=20000) 
             current_step = 1 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
             
-            await asyncio.sleep(3) 
+            # MODIFIKASI: Mengurangi waktu tunggu awal
+            await asyncio.sleep(1) 
             current_step = 2 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
 
             BUTTON_SELECTOR = "button:has-text('Get Number')" 
-            await page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=15000)
+            # MODIFIKASI: Mengurangi timeout wait_for_selector
+            await page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=10000) 
             
             for i in range(click_count):
+                # MODIFIKASI: Menghilangkan sleep antar klik
                 await page.click(BUTTON_SELECTOR, force=True)
-                await asyncio.sleep(0.5) 
             
             current_step = 3 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
             
-            await asyncio.sleep(1) 
+            # MODIFIKASI: Mengurangi waktu tunggu setelah klik
+            await asyncio.sleep(0.5) 
             current_step = 4 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
             
-            await asyncio.sleep(2) 
+            # MODIFIKASI: Mengurangi waktu tunggu sebelum polling
+            await asyncio.sleep(1) 
             
-            delay_duration_round_1 = 6.0 
-            delay_duration_round_2 = 6.0
+            # MODIFIKASI: Mengurangi durasi polling
+            delay_duration_round_1 = 4.0 
+            delay_duration_round_2 = 4.0
             
-            progress_update_interval = 0.2 
-            check_number_interval = 0.5 
+            # MODIFIKASI: Mengurangi interval polling
+            check_number_interval = 0.25 
             
             found_numbers = [] 
             
@@ -453,7 +491,8 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
                 elif round_num == 1:
                     if len(found_numbers) < num_to_fetch: 
                         await page.click(BUTTON_SELECTOR, force=True) 
-                        await asyncio.sleep(3) 
+                        # MODIFIKASI: Mengurangi waktu tunggu setelah klik retry
+                        await asyncio.sleep(1.5) 
                         current_step = 8 
                 
                 start_time = time.time()
@@ -465,17 +504,8 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
                     
                     if current_time - last_number_check_time >= check_number_interval:
                         
-                        current_numbers = []
-                        all_countries = set() 
-                        
-                        for i in range(1, num_to_fetch + 1):
-                            row_selector = f"tbody tr:nth-child({i})"
-                            number, country, status = await get_number_and_country_from_row(row_selector, page)
-                            
-                            if number and number not in [n['number'] for n in current_numbers]:
-                                current_numbers.append({'number': number, 'country': country})
-                                all_countries.add(country)
-
+                        # MODIFIKASI: Menggunakan fungsi paralel untuk ekstraksi data
+                        current_numbers = await get_all_numbers_parallel(page, num_to_fetch)
                         found_numbers = current_numbers
                         last_number_check_time = current_time 
                         
@@ -483,10 +513,14 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
                             current_step = 12
                             break
                     
-                    current_step += 1
-                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
+                    # MODIFIKASI: Update progress bar agar tidak terlalu sering memanggil tg_edit
+                    # Memastikan update progress terjadi minimal 15 kali selama durasi total
+                    target_step = int(15 * (time.time() - start_operation_time) / (delay_duration_round_1 + delay_duration_round_2 + 4)) # Perkiraan total durasi
+                    if target_step > current_step:
+                         current_step = target_step
+                         tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
                     
-                    await asyncio.sleep(progress_update_interval) 
+                    await asyncio.sleep(0.05) # Mengurangi sleep I/O
                     
                 if len(found_numbers) >= num_to_fetch: break
             
@@ -496,11 +530,11 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
 
             main_country = found_numbers[0]['country'] if found_numbers else "UNKNOWN"
 
+            # MODIFIKASI: Finalisasi yang lebih cepat
             if found_numbers:
-                while current_step < 15:
-                    current_step += 1
-                    tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
-                    await asyncio.sleep(0.1) 
+                for step in range(current_step + 1, 16):
+                    tg_edit(user_id, msg_id, get_progress_message(step, 0, prefix, num_to_fetch))
+                    if step == 15: break
 
             for entry in found_numbers:
                 save_cache({"number": entry['number'], "country": entry['country'], "user_id": user_id, "time": time.time()})
@@ -526,7 +560,6 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
                 "<b>Waiting for OTP....</b>"
             )
 
-            # --- Keyboard Inline Vertikal (Sesuai Permintaan) ---
             inline_kb = {
                 "inline_keyboard": [
                     [{"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"}],
@@ -751,7 +784,8 @@ async def telegram_loop(browser):
                     await process_user_input(browser, user_id, prefix, num_to_fetch) 
                     continue
                 
-        await asyncio.sleep(0.5)
+        # MODIFIKASI: Mengurangi waktu sleep untuk meningkatkan responsivitas
+        await asyncio.sleep(0.05) 
 
 def initialize_files():
     files = {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]", USER_FILE: "[]"}
@@ -781,6 +815,7 @@ async def main():
     
     sms_process = None
     try:
+        # Menjalankan sms.py
         sms_process = subprocess.Popen([sys.executable, "sms.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True)
     except Exception as e:
         print(f"[FATAL ERROR] Failed to start sms.py: {e}")
@@ -789,12 +824,14 @@ async def main():
     try:
         async with async_playwright() as p:
             try:
+                # Koneksi ke Chrome/Chromium via CDP (Asumsi Chrome sudah berjalan di port 9222)
                 browser = await p.chromium.connect_over_cdp("http://localhost:9222")
             except Exception as e:
                 print(f"[ERROR] Gagal koneksi ke Chrome CDP: {e}")
                 if sms_process and sms_process.poll() is None: sms_process.terminate()
                 return
 
+            # Memastikan setidaknya ada satu halaman terbuka di konteks browser
             if not browser.contexts[0].pages:
                  page = await browser.contexts[0].new_page()
                  await page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
