@@ -539,8 +539,7 @@ async def process_user_input(browser, user_id, prefix, click_count, message_id_t
             msg += (
                 f"{emoji} COUNTRY : {main_country}\n"
                 f"🏷️ Range   : <code>{prefix}</code>\n\n"
-                "<b>🤖 Number available please use.</b>\n"
-                "<b>Waiting for OTP....</b>"
+                "<b>🤖 Number available please use, Waiting for OTP</b>\n"
             )
 
             # Update: Keyboard Inline baru dengan tombol Change Range sejajar OTP Grup
