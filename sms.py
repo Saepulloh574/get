@@ -10,7 +10,9 @@ load_dotenv()
 # ================= Konfigurasi Global =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# Waktu tunggu standar sebelum dapet OTP (default 30 menit)
 WAIT_TIMEOUT_SECONDS = int(os.getenv("WAIT_TIMEOUT_SECONDS", 1800)) 
+# Waktu tunggu tambahan SETELAH dapet OTP (5 menit)
 EXTENDED_WAIT_SECONDS = 300 
 
 SMC_FILE = "smc.json"
@@ -23,7 +25,7 @@ def create_otp_keyboard(otp):
     keyboard = {
         "inline_keyboard": [
             [
-                {"text": f" {otp}", "copy_text": {"text": otp}},
+                {"text": f"📋 {otp}", "copy_text": {"text": otp}},
                 {"text": "💸 Donate", "url": DONATE_LINK}
             ]
         ]
@@ -44,45 +46,40 @@ def tg_send(chat_id, text, reply_markup=None):
         data["reply_markup"] = reply_markup
         
     try:
-        requests.post(f"{API}/sendMessage", json=data, timeout=15)
+        response = requests.post(f"{API}/sendMessage", json=data, timeout=15)
+        return response.json()
     except Exception as e:
         print(f"[ERROR REQUEST] {e}")
+        return None
 
 # ================= Fungsi Baca/Tulis File =================
 
-def load_wait_list():
-    if os.path.exists(WAIT_FILE):
-        with open(WAIT_FILE, "r") as f:
-            try: return json.load(f)
-            except: return []
+def load_json_file(filename):
+    if os.path.exists(filename):
+        with open(filename, "r") as f:
+            try:
+                return json.load(f)
+            except:
+                return []
     return []
 
-def save_wait_list(data):
-    with open(WAIT_FILE, "w") as f:
+def save_json_file(filename, data):
+    with open(filename, "w") as f:
         json.dump(data, f, indent=2)
 
-def load_smc():
-    if os.path.exists(SMC_FILE):
-        with open(SMC_FILE, "r") as f:
-            try: return json.load(f)
-            except: return []
-    return []
-
-def save_smc(data):
-    with open(SMC_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-        
 # ================= Fungsi Utama Monitoring =================
 
 def check_and_forward():
-    wait_list = load_wait_list()
-    if not wait_list: return
+    wait_list = load_json_file(WAIT_FILE)
+    if not wait_list:
+        return
         
-    sms_data = load_smc()
+    sms_data = load_json_file(SMC_FILE)
     new_wait_list = [] 
     current_time = time.time()
     sms_was_changed = False
     
+    # Iterasi setiap user yang sedang menunggu OTP
     for wait_item in wait_list:
         wait_number = wait_item.get('number', 'N/A')
         wait_user_id = wait_item.get('user_id')
@@ -90,29 +87,31 @@ def check_and_forward():
         user_identity = wait_item.get('username', 'Unknown User')
         otp_received_time = wait_item.get('otp_received_time')
 
-        # 1. Logic Hapus setelah 5 menit dpt OTP
+        # 1. Logic Hapus: Jika sudah lewat 5 menit sejak OTP terakhir diterima
         if otp_received_time:
             if current_time - otp_received_time > EXTENDED_WAIT_SECONDS:
+                print(f"[CLEANUP] Sesi selesai untuk {wait_number}")
                 continue 
         
-        # 2. Logic Expired sebelum dpt OTP
+        # 2. Logic Expired: Jika belum dapet OTP sama sekali hingga timeout 30 menit
         elif current_time - start_timestamp > WAIT_TIMEOUT_SECONDS:
             timeout_msg = (
                 "⚠️ <b>Waktu Habis</b>\n"
-                f"Nomor: <code>{wait_number}</code> telah dihapus."
+                f"Nomor: <code>{wait_number}</code> telah dihapus dari sistem monitoring karena tidak ada SMS masuk."
             )
             tg_send(wait_user_id, timeout_msg)
+            print(f"[TIMEOUT] {wait_number} dihapus karena durasi habis.")
             continue
 
-        # 3. Cek SMS Masuk
-        found_any_sms = False
+        # 3. Cek SMS Masuk di smc.json
         remaining_sms = []
+        found_otp_for_this_user = False
         
         for sms_entry in sms_data:
-            if sms_entry.get("Number") == wait_number:
+            # Jika nomor di smc.json cocok dengan nomor di wait_list
+            if str(sms_entry.get("Number")) == str(wait_number):
                 otp = sms_entry.get("OTP", "N/A")
                 
-                # Struktur Pesan Baru Sesuai Permintaan
                 response_text = (
                     "🗯️ <b>New Message Detected</b>\n\n"
                     f"👤 <b>User:</b> {user_identity}\n"
@@ -121,34 +120,45 @@ def check_and_forward():
                     "⚡ <b>Tap the Button To Copy OTP</b> ⚡"
                 )
                 
-                # Kirim dengan Tombol Copy & Donate Sejajar
                 keyboard = create_otp_keyboard(otp)
                 tg_send(wait_user_id, response_text, reply_markup=keyboard)
 
-                print(f"[SUCCESS] OTP dikirim ke {user_identity}")
+                print(f"[SUCCESS] OTP {otp} terkirim ke {user_identity}")
                 
+                # Update waktu terima OTP terakhir (agar 5 menit dihitung dari sini)
                 wait_item['otp_received_time'] = time.time()
-                found_any_sms = True
                 sms_was_changed = True
+                found_otp_for_this_user = True
+                # SMS ini TIDAK dimasukkan ke remaining_sms (artinya dihapus)
             else:
                 remaining_sms.append(sms_entry)
         
-        if found_any_sms:
+        # Jika user ini dapet OTP, update sms_data global untuk iterasi user berikutnya
+        if found_otp_for_this_user:
             sms_data = remaining_sms 
 
+        # Masukkan kembali user ke antrean (karena masa tunggu mungkin belum habis)
         new_wait_list.append(wait_item)
 
+    # Simpan perubahan
     if sms_was_changed:
-        save_smc(sms_data)
-    save_wait_list(new_wait_list)
+        save_json_file(SMC_FILE, sms_data)
+    
+    save_json_file(WAIT_FILE, new_wait_list)
 
 def sms_loop():
-    print(f"[STARTED] Monitor OTP berjalan. (Extended Wait: {EXTENDED_WAIT_SECONDS/60}m)")
+    print("========================================")
+    print(f"[STARTED] Monitor OTP Aktif")
+    print(f"[CONFIG] Timeout: {WAIT_TIMEOUT_SECONDS/60}m")
+    print(f"[CONFIG] Extended: {EXTENDED_WAIT_SECONDS/60}m")
+    print("========================================")
+    
     while True:
         try:
             check_and_forward()
-            time.sleep(2) 
+            time.sleep(2) # Cek setiap 2 detik
         except KeyboardInterrupt:
+            print("\n[STOPPED] Bot dimatikan.")
             break
         except Exception as e:
             print(f"[LOOP ERROR] {e}")
