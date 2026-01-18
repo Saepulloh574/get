@@ -75,11 +75,13 @@ def check_and_forward():
         return
         
     sms_data = load_json_file(SMC_FILE)
+    if not sms_data:
+        return
+
     new_wait_list = [] 
     current_time = time.time()
     sms_was_changed = False
     
-    # Iterasi setiap user yang sedang menunggu OTP
     for wait_item in wait_list:
         wait_number = wait_item.get('number', 'N/A')
         wait_user_id = wait_item.get('user_id')
@@ -87,28 +89,27 @@ def check_and_forward():
         user_identity = wait_item.get('username', 'Unknown User')
         otp_received_time = wait_item.get('otp_received_time')
 
-        # 1. Logic Hapus: Jika sudah lewat 5 menit sejak OTP terakhir diterima
+        # 1. Logic Sesi Selesai (Cleanup)
         if otp_received_time:
             if current_time - otp_received_time > EXTENDED_WAIT_SECONDS:
                 print(f"[CLEANUP] Sesi selesai untuk {wait_number}")
                 continue 
         
-        # 2. Logic Expired: Jika belum dapet OTP sama sekali hingga timeout 30 menit
+        # 2. Logic Expired
         elif current_time - start_timestamp > WAIT_TIMEOUT_SECONDS:
             timeout_msg = (
                 "⚠️ <b>Waktu Habis</b>\n"
-                f"Nomor: <code>{wait_number}</code> telah dihapus dari sistem monitoring karena tidak ada SMS masuk."
+                f"Nomor: <code>{wait_number}</code> telah dihapus karena tidak ada SMS masuk."
             )
             tg_send(wait_user_id, timeout_msg)
-            print(f"[TIMEOUT] {wait_number} dihapus karena durasi habis.")
+            print(f"[TIMEOUT] {wait_number} dihapus.")
             continue
 
-        # 3. Cek SMS Masuk di smc.json
+        # 3. Cek & Filter SMS
         remaining_sms = []
-        found_otp_for_this_user = False
+        found_for_this_user = False
         
         for sms_entry in sms_data:
-            # Jika nomor di smc.json cocok dengan nomor di wait_list
             if str(sms_entry.get("Number")) == str(wait_number):
                 otp = sms_entry.get("OTP", "N/A")
                 
@@ -123,24 +124,19 @@ def check_and_forward():
                 keyboard = create_otp_keyboard(otp)
                 tg_send(wait_user_id, response_text, reply_markup=keyboard)
 
-                print(f"[SUCCESS] OTP {otp} terkirim ke {user_identity}")
+                print(f"[SUCCESS] OTP {otp} terkirim. Menghapus data dari smc.json.")
                 
-                # Update waktu terima OTP terakhir (agar 5 menit dihitung dari sini)
                 wait_item['otp_received_time'] = time.time()
                 sms_was_changed = True
-                found_otp_for_this_user = True
-                # SMS ini TIDAK dimasukkan ke remaining_sms (artinya dihapus)
+                found_for_this_user = True
             else:
                 remaining_sms.append(sms_entry)
         
-        # Jika user ini dapet OTP, update sms_data global untuk iterasi user berikutnya
-        if found_otp_for_this_user:
-            sms_data = remaining_sms 
-
-        # Masukkan kembali user ke antrean (karena masa tunggu mungkin belum habis)
+        # Update sms_data untuk iterasi user berikutnya agar SMS yang sudah diproses hilang
+        sms_data = remaining_sms
         new_wait_list.append(wait_item)
 
-    # Simpan perubahan
+    # Simpan perubahan permanen jika ada SMS yang diproses
     if sms_was_changed:
         save_json_file(SMC_FILE, sms_data)
     
@@ -149,6 +145,7 @@ def check_and_forward():
 def sms_loop():
     print("========================================")
     print(f"[STARTED] Monitor OTP Aktif")
+    print(f"[CONFIG] Startup: smc.json dibersihkan")
     print(f"[CONFIG] Timeout: {WAIT_TIMEOUT_SECONDS/60}m")
     print(f"[CONFIG] Extended: {EXTENDED_WAIT_SECONDS/60}m")
     print("========================================")
@@ -156,7 +153,7 @@ def sms_loop():
     while True:
         try:
             check_and_forward()
-            time.sleep(2) # Cek setiap 2 detik
+            time.sleep(2) 
         except KeyboardInterrupt:
             print("\n[STOPPED] Bot dimatikan.")
             break
@@ -165,4 +162,10 @@ def sms_loop():
             time.sleep(5) 
 
 if __name__ == "__main__":
+    # --- PROSES PEMBERSIHAN SAAT PERTAMA KALI JALAN ---
+    if os.path.exists(SMC_FILE):
+        print(f"[STARTUP] Mengosongkan {SMC_FILE} secara permanen...")
+        save_json_file(SMC_FILE, []) 
+    # --------------------------------------------------
+    
     sms_loop()
