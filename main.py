@@ -453,14 +453,15 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
                 msg_id = tg_send(user_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
                 if not msg_id: return
             
-            # --- LOGIKA BARU: TAB STANDBY ---
+            # --- LOGIKA TAB STANDBY ---
             if not shared_page:
                 context = browser.contexts[0]
                 shared_page = await context.new_page()
                 await shared_page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
 
-            # ISI INPUT MANUAL
-            INPUT_SELECTOR = "input[name='range'], input[placeholder*='Range']"
+            # --- INPUT RANGE ASLI ---
+            INPUT_SELECTOR = "input[name='numberrange']"
+            await shared_page.wait_for_selector(INPUT_SELECTOR, state='visible', timeout=10000)
             await shared_page.fill(INPUT_SELECTOR, "")
             await shared_page.fill(INPUT_SELECTOR, prefix)
 
