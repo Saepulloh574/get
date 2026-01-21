@@ -12,6 +12,8 @@ import math
 
 # --- ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
 playwright_lock = asyncio.Lock()
+# Tambahan Variable Global untuk Tab Standby
+shared_page = None 
 # ----------------------------------------------
 
 # --- DATA GLOBAL EMOJI NEGARA ---
@@ -428,9 +430,9 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
     """Memproses permintaan Get Number dengan jumlah klik (1 atau 3) yang ditentukan."""
     global GLOBAL_COUNTRY_EMOJI 
     global last_used_range 
+    global shared_page
 
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
-    page = None
     action_loop_task = None 
     num_to_fetch = click_count 
 
@@ -451,23 +453,29 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
                 msg_id = tg_send(user_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
                 if not msg_id: return
             
-            context = browser.contexts[0]
-            page = await context.new_page() 
-            
-            NEW_URL = f"{BASE_WEB_URL}?range={prefix}"
-            await page.goto(NEW_URL, wait_until='domcontentloaded', timeout=20000) 
+            # --- LOGIKA BARU: TAB STANDBY ---
+            if not shared_page:
+                context = browser.contexts[0]
+                shared_page = await context.new_page()
+                await shared_page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
+
+            # ISI INPUT MANUAL
+            INPUT_SELECTOR = "input[name='range'], input[placeholder*='Range']"
+            await shared_page.fill(INPUT_SELECTOR, "")
+            await shared_page.fill(INPUT_SELECTOR, prefix)
+
             current_step = 1 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
             
-            await asyncio.sleep(1) 
+            await asyncio.sleep(0.5) 
             current_step = 2 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
 
             BUTTON_SELECTOR = "button:has-text('Get Number')" 
-            await page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=10000) 
+            await shared_page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=10000) 
             
             for i in range(click_count):
-                await page.click(BUTTON_SELECTOR, force=True)
+                await shared_page.click(BUTTON_SELECTOR, force=True)
             
             current_step = 3 
             tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
@@ -488,7 +496,7 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
                     current_step = 5 
                 elif round_num == 1:
                     if len(found_numbers) < num_to_fetch: 
-                        await page.click(BUTTON_SELECTOR, force=True) 
+                        await shared_page.click(BUTTON_SELECTOR, force=True) 
                         await asyncio.sleep(1.5) 
                         current_step = 8 
                 
@@ -498,7 +506,7 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
                 while (time.time() - start_time) < duration:
                     current_time = time.time()
                     if current_time - last_number_check_time >= check_number_interval:
-                        current_numbers = await get_all_numbers_parallel(page, num_to_fetch)
+                        current_numbers = await get_all_numbers_parallel(shared_page, num_to_fetch)
                         found_numbers = current_numbers
                         last_number_check_time = current_time 
                         if len(found_numbers) >= num_to_fetch:
@@ -561,7 +569,6 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
         except Exception as e:
             if msg_id: tg_edit(user_id, msg_id, f"❌ Terjadi kesalahan fatal ({type(e).__name__}). Mohon coba lagi.")
         finally:
-            if page: await page.close()
             if action_loop_task: action_loop_task.cancel()
 
 
@@ -735,6 +742,7 @@ def initialize_files():
             with open(file, "w") as f: f.write(default_content)
 
 async def main():
+    global shared_page
     print("[INFO] Starting main bot...")
     initialize_files()
     clear_pending_updates()
@@ -746,9 +754,12 @@ async def main():
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-            if not browser.contexts[0].pages:
-                 page = await browser.contexts[0].new_page()
-                 await page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
+            
+            # --- PERSYARATAN: BUAT TAB STANDBY DI AWAL ---
+            context = browser.contexts[0]
+            shared_page = await context.new_page()
+            await shared_page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
+            
             await asyncio.gather(telegram_loop(browser), expiry_monitor_task())
     except Exception as e:
         print(f"[FATAL ERROR] {e}")
