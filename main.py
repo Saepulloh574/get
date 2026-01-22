@@ -1,4 +1,4 @@
-import asyncio
+Import asyncio
 import json
 import os
 import requests
@@ -124,6 +124,7 @@ CACHE_FILE = "cache.json"
 INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
+AKSES_GET10_FILE = "aksesget10.json"
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g" 
@@ -135,6 +136,7 @@ broadcast_message = {}
 verified_users = set()
 waiting_admin_input = set()
 manual_range_input = set() 
+get10_range_input = set()
 pending_message = {}
 sent_numbers = set()
 last_used_range = {}
@@ -191,6 +193,27 @@ def load_inline_ranges():
 def save_inline_ranges(ranges):
     with open(INLINE_RANGE_FILE, "w") as f:
         json.dump(ranges, f, indent=2)
+
+def load_akses_get10():
+    if os.path.exists(AKSES_GET10_FILE):
+        with open(AKSES_GET10_FILE, "r") as f:
+            try:
+                return set(json.load(f))
+            except json.JSONDecodeError:
+                return set()
+    return set()
+
+def save_akses_get10(user_id_to_add):
+    akses = load_akses_get10()
+    akses.add(int(user_id_to_add))
+    with open(AKSES_GET10_FILE, "w") as f:
+        json.dump(list(akses), f, indent=2)
+
+def has_get10_access(user_id):
+    if user_id == ADMIN_ID:
+        return True
+    akses_list = load_akses_get10()
+    return user_id in akses_list
 
 def generate_inline_keyboard(ranges):
     """Membuat keyboard inline dari daftar range yang tersedia, ditambah tombol Manual Range."""
@@ -413,7 +436,8 @@ async def get_all_numbers_parallel(page, num_to_fetch):
     asyncio.gather untuk memanggil fungsi ekstraksi Playwright secara bersamaan.
     """
     tasks = []
-    for i in range(1, num_to_fetch + 4): 
+    # Loop disesuaikan agar bisa mengambil lebih banyak nomor (hingga 10+)
+    for i in range(1, num_to_fetch + 5): 
         row_selector = f"tbody tr:nth-child({i})"
         tasks.append(get_number_and_country_from_row(row_selector, page))
     
@@ -428,7 +452,7 @@ async def get_all_numbers_parallel(page, num_to_fetch):
 
 
 async def process_user_input(browser, user_id, prefix, click_count, username_tg, first_name_tg, message_id_to_edit=None):
-    """Memproses permintaan Get Number dengan jumlah klik (1 atau 3) yang ditentukan."""
+    """Memproses permintaan Get Number dengan jumlah klik yang ditentukan."""
     global GLOBAL_COUNTRY_EMOJI 
     global last_used_range 
     global shared_page
@@ -489,8 +513,8 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
             
             await asyncio.sleep(1) 
             
-            delay_duration_round_1 = 4.0 
-            delay_duration_round_2 = 4.0
+            delay_duration_round_1 = 5.0 # Ditambah sedikit agar stabil untuk 10 nomor
+            delay_duration_round_2 = 5.0
             check_number_interval = 0.25 
             found_numbers = [] 
             
@@ -543,20 +567,28 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
             
             last_used_range[user_id] = prefix 
             emoji = GLOBAL_COUNTRY_EMOJI.get(main_country, "🗺️") 
-            msg = "✅ The number is ready\n\n"
             
-            if num_to_fetch == 1:
-                num_data = found_numbers[0]
-                msg += f"📞 Number  : <code>{num_data['number']}</code>\n"
-            elif num_to_fetch == 3:
-                for idx, num_data in enumerate(found_numbers[:3]):
-                    msg += f"📞 Number {idx+1} : <code>{num_data['number']}</code>\n"
-            
-            msg += (
-                f"{emoji} COUNTRY : {main_country}\n"
-                f"🏷️ Range   : <code>{prefix}</code>\n\n"
-                "<b>🤖 Number available please use, Waiting for OTP</b>\n"
-            )
+            # --- MODIFIKASI FORMAT OUTPUT KHUSUS /get10 ---
+            if num_to_fetch == 10:
+                msg = "✅The number is already.\n\n<code>"
+                for entry in found_numbers[:10]:
+                    msg += f"{entry['number']}\n"
+                msg += "</code>"
+                # Tanpa label Negara/Range di bawah list nomor sesuai permintaan user
+            else:
+                msg = "✅ The number is ready\n\n"
+                if num_to_fetch == 1:
+                    num_data = found_numbers[0]
+                    msg += f"📞 Number  : <code>{num_data['number']}</code>\n"
+                else:
+                    for idx, num_data in enumerate(found_numbers[:num_to_fetch]):
+                        msg += f"📞 Number {idx+1} : <code>{num_data['number']}</code>\n"
+                
+                msg += (
+                    f"{emoji} COUNTRY : {main_country}\n"
+                    f"🏷️ Range   : <code>{prefix}</code>\n\n"
+                    "<b>🤖 Number available please use, Waiting for OTP</b>\n"
+                )
 
             inline_kb = {
                 "inline_keyboard": [
@@ -611,6 +643,25 @@ async def telegram_loop(browser):
                         msg_id = tg_send(user_id, prompt_msg_text)
                         if msg_id: broadcast_message[user_id] = msg_id 
                         continue
+                    # --- FITUR BERI AKSES get10 ---
+                    elif text.startswith("/get10akses "):
+                        try:
+                            target_id = text.split(" ")[1]
+                            save_akses_get10(target_id)
+                            tg_send(user_id, f"✅ User <code>{target_id}</code> berhasil diberi akses /get10.")
+                        except:
+                            tg_send(user_id, "❌ Gagal. Gunakan format: <code>/get10akses ID_USER</code>")
+                        continue
+
+                # --- FITUR /get10 (ADMIN & USER TERAKSES) ---
+                if text == "/get10":
+                    if has_get10_access(user_id):
+                        get10_range_input.add(user_id)
+                        msg_id = tg_send(user_id, "kirim range contoh 225071606XXX")
+                        if msg_id: pending_message[user_id] = msg_id
+                    else:
+                        tg_send(user_id, "❌ Anda tidak memiliki akses untuk perintah ini.")
+                    continue
 
                 if user_id in waiting_admin_input:
                     waiting_admin_input.remove(user_id)
@@ -638,6 +689,20 @@ async def telegram_loop(browser):
                         continue
                     tg_edit(chat_id, prompt_msg_id, "✅ Memulai siaran...")
                     await tg_broadcast(text, user_id)
+                    continue
+
+                # --- PROSES INPUT UNTUK /get10 ---
+                if user_id in get10_range_input:
+                    get10_range_input.remove(user_id)
+                    prefix = text.strip()
+                    menu_msg_id = pending_message.pop(user_id, None)
+                    is_manual_format = re.match(r"^\+?\d{3,15}[Xx*#]+$", prefix, re.IGNORECASE)
+                    if is_manual_format:
+                        if not menu_msg_id: menu_msg_id = tg_send(chat_id, get_progress_message(0, 0, prefix, 10))
+                        else: tg_edit(chat_id, menu_msg_id, get_progress_message(0, 0, prefix, 10))
+                        await process_user_input(browser, user_id, prefix, 10, username_tg, first_name, menu_msg_id)
+                    else:
+                        tg_send(chat_id, "❌ Format Range tidak valid.")
                     continue
                 
                 is_manual_format = re.match(r"^\+?\d{3,15}[Xx*#]+$", text.strip(), re.IGNORECASE)
@@ -740,7 +805,7 @@ async def delayed_delete(chat_id, message_id, delay):
     tg_delete(chat_id, message_id)
 
 def initialize_files():
-    files = {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]", USER_FILE: "[]", WAIT_FILE: "[]"}
+    files = {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]", USER_FILE: "[]", WAIT_FILE: "[]", AKSES_GET10_FILE: "[]"}
     for file, default_content in files.items():
         if not os.path.exists(file):
             with open(file, "w") as f: f.write(default_content)
