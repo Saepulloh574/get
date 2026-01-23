@@ -11,15 +11,14 @@ import sys
 import time
 import math 
 
-# --- KONFIGURASI LEVEL 2 ---
+# --- KONFIGURASI LEVEL 2 (UBAH DISINI) ---
 EMAIL_MNIT = "muhamadreyhan0073@gmail.com"
 PASS_MNIT = "fd140206"
-# ---------------------------
+# -----------------------------------------
 
-# --- ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
+# --- ASYNCIO LOCK UNTUK ANTRIAN ---
 playwright_lock = asyncio.Lock()
 shared_page = None 
-# ----------------------------------------------
 
 # --- DATA GLOBAL EMOJI NEGARA ---
 GLOBAL_COUNTRY_EMOJI = {
@@ -64,398 +63,274 @@ GLOBAL_COUNTRY_EMOJI = {
   "VENEZUELA": "🇻🇪", "VIETNAM": "🇻🇳", "YEMEN": "🇾🇪", "ZAMBIA": "🇿🇲", "ZIMBABWE": "🇿🇼", "UNKNOWN": "🗺️" 
 }
 
-# --- KONFIGURASI PROGRESS BAR GLOBAL ---
-MAX_BAR_LENGTH = 12 
-FILLED_CHAR = "█"
-EMPTY_CHAR = "░"
-
+# --- PROGRESS BAR GLOBAL ---
 STATUS_MAP = {
     0:  "Menunggu di antrian sistem aktif..",
     3:  "Mengirim permintaan nomor baru go.",
+    4:  "Memulai pencarian di tabel data..",
+    5:  "Mencari nomor pada siklus satu run",
+    8:  "Mencoba ulang pada siklus dua wait",
     12: "Nomor ditemukan memproses data fin"
 }
 
 def get_progress_message(current_step, total_steps, prefix_range, num_count):
     progress_ratio = min(current_step / 12, 1.0)
-    filled_count = math.ceil(progress_ratio * MAX_BAR_LENGTH)
-    empty_count = MAX_BAR_LENGTH - filled_count
-    progress_bar = FILLED_CHAR * filled_count + EMPTY_CHAR * empty_count
+    filled_count = math.ceil(progress_ratio * 12)
+    empty_count = 12 - filled_count
+    progress_bar = "█" * filled_count + "░" * empty_count
     current_status = STATUS_MAP.get(current_step, "Sedang memproses..")
     return (
-    f"<code>{current_status}</code>\n"
-    f"<blockquote>Range: <code>{prefix_range}</code> | Jumlah: <code>{num_count}</code></blockquote>\n"
-    f"<code>Load:</code> [{progress_bar}]"
-)
+        f"<code>{current_status}</code>\n"
+        f"<blockquote>Range: <code>{prefix_range}</code> | Jumlah: <code>{num_count}</code></blockquote>\n"
+        f"<code>Load:</code> [{progress_bar}]"
+    )
 
-# --- LOAD DOTENV ---
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-try:
-    GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
-    GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
-    ADMIN_ID = int(os.getenv("ADMIN_ID"))
-except (TypeError, ValueError) as e:
-    print(f"[FATAL] Variabel lingkungan GROUP_ID_1, GROUP_ID_2, atau ADMIN_ID tidak diatur: {e}")
-    sys.exit(1)
-
+GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
+GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 BASE_WEB_URL = "https://x.mnitnetwork.com/mdashboard/getnum" 
 
 # --- KONSTANTA FILE ---
-USER_FILE = "user.json" 
-CACHE_FILE = "cache.json"
-INLINE_RANGE_FILE = "inline.json"
-SMC_FILE = "smc.json"
-WAIT_FILE = "wait.json"
-AKSES_GET10_FILE = "aksesget10.json"
-GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
-GROUP_LINK_2 = "https://t.me/zura14g" 
+USER_FILE = "user.json"; CACHE_FILE = "cache.json"; INLINE_RANGE_FILE = "inline.json"
+WAIT_FILE = "wait.json"; AKSES_GET10_FILE = "aksesget10.json"
+GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1"; GROUP_LINK_2 = "https://t.me/zura14g" 
 
-# --- VARIABEL GLOBAL ---
-waiting_broadcast_input = set() 
-broadcast_message = {} 
-verified_users = set()
-waiting_admin_input = set()
-manual_range_input = set() 
-get10_range_input = set()
-pending_message = {}
-last_used_range = {}
+# --- VARIABEL GLOBAL BOT ---
+verified_users = set(); waiting_admin_input = set(); manual_range_input = set()
+get10_range_input = set(); pending_message = {}; waiting_broadcast_input = set(); broadcast_message = {}
 
-# --- FUNGSI UTILITAS MANAJEMEN FILE ---
+# --- FUNGSI UTILITAS FILE ---
 def load_users():
     if os.path.exists(USER_FILE):
-        with open(USER_FILE, "r") as f:
-            try: return set(json.load(f))
-            except: return set()
+        with open(USER_FILE, "r") as f: return set(json.load(f))
     return set()
 
 def save_users(user_id):
-    users = load_users()
-    if user_id not in users:
-        users.add(user_id)
-        with open(USER_FILE, "w") as f: json.dump(list(users), f, indent=2)
+    users = load_users(); users.add(user_id)
+    with open(USER_FILE, "w") as f: json.dump(list(users), f, indent=2)
 
 def load_cache():
     if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "r") as f:
-            try: return json.load(f)
-            except: return []
+        with open(CACHE_FILE, "r") as f: return json.load(f)
     return []
 
-def save_cache(number_entry):
-    cache = load_cache()
-    if len(cache) >= 1000: cache.pop(0) 
-    cache.append(number_entry)
+def save_cache(entry):
+    cache = load_cache(); cache.append(entry)
+    if len(cache) > 1000: cache.pop(0)
     with open(CACHE_FILE, "w") as f: json.dump(cache, f, indent=2)
 
 def is_in_cache(number):
-    cache = load_cache()
-    normalized_number = normalize_number(number) 
-    return any(normalize_number(entry["number"]) == normalized_number for entry in cache)
+    num = normalize_number(number)
+    return any(normalize_number(e["number"]) == num for e in load_cache())
 
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
-        with open(INLINE_RANGE_FILE, "r") as f:
-            try: return json.load(f)
-            except: return []
+        with open(INLINE_RANGE_FILE, "r") as f: return json.load(f)
     return []
 
 def save_inline_ranges(ranges):
     with open(INLINE_RANGE_FILE, "w") as f: json.dump(ranges, f, indent=2)
 
-def load_akses_get10():
-    if os.path.exists(AKSES_GET10_FILE):
-        with open(AKSES_GET10_FILE, "r") as f:
-            try: return set(json.load(f))
-            except: return set()
-    return set()
-
-def save_akses_get10(user_id_to_add):
-    akses = load_akses_get10()
-    akses.add(int(user_id_to_add))
-    with open(AKSES_GET10_FILE, "w") as f: json.dump(list(akses), f, indent=2)
-
-def has_get10_access(user_id):
-    if user_id == ADMIN_ID: return True
-    return user_id in load_akses_get10()
-
-def generate_inline_keyboard(ranges):
-    keyboard = []
-    current_row = []
-    for item in ranges:
-        text = f"{item['country']} {item['emoji']}"
-        current_row.append({"text": text, "callback_data": f"select_range:{item['range']}"})
-        if len(current_row) == 2:
-            keyboard.append(current_row)
-            current_row = []
-    if current_row: keyboard.append(current_row)
-    keyboard.append([{"text": "Input Manual Range..🖊️", "callback_data": "manual_range"}])
-    return {"inline_keyboard": keyboard}
-
 def load_wait_list():
     if os.path.exists(WAIT_FILE):
-        with open(WAIT_FILE, "r") as f:
-            try: return json.load(f)
-            except: return []
+        with open(WAIT_FILE, "r") as f: return json.load(f)
     return []
 
 def save_wait_list(data):
     with open(WAIT_FILE, "w") as f: json.dump(data, f, indent=2)
 
 def add_to_wait_list(number, user_id, username, first_name):
-    wait_list = load_wait_list()
-    normalized_number = normalize_number(number)
-    if username and username != "None":
-        final_identity = f"@{username.replace('@', '')}"
-    else:
-        final_identity = f'<a href="tg://user?id={user_id}">{first_name}</a>'
-    wait_list = [item for item in wait_list if item['number'] != normalized_number]
-    wait_list.append({"number": normalized_number, "user_id": user_id, "username": final_identity, "timestamp": time.time()})
+    wait_list = load_wait_list(); num = normalize_number(number)
+    identity = f"@{username}" if username and username != "None" else f'<a href="tg://user?id={user_id}">{first_name}</a>'
+    wait_list = [i for i in wait_list if i['number'] != num]
+    wait_list.append({"number": num, "user_id": user_id, "username": identity, "timestamp": time.time()})
     save_wait_list(wait_list)
 
 def normalize_number(number):
-    normalized_number = str(number).strip().replace(" ", "").replace("-", "")
-    if not normalized_number.startswith('+') and normalized_number.isdigit():
-        normalized_number = '+' + normalized_number
-    return normalized_number
+    n = str(number).strip().replace(" ", "").replace("-", "")
+    return "+" + n if n.isdigit() and not n.startswith("+") else n
 
-# --- TG API UTILS ---
-def tg_send(chat_id, text, reply_markup=None):
-    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup: data["reply_markup"] = reply_markup
-    try:
-        r = requests.post(f"{API}/sendMessage", json=data).json()
-        return r["result"]["message_id"] if r.get("ok") else None
-    except: return None
+def has_get10_access(user_id):
+    if user_id == ADMIN_ID: return True
+    if os.path.exists(AKSES_GET10_FILE):
+        with open(AKSES_GET10_FILE, "r") as f: return user_id in json.load(f)
+    return False
 
-def tg_edit(chat_id, message_id, text, reply_markup=None):
-    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
-    if reply_markup: data["reply_markup"] = reply_markup
-    try: requests.post(f"{API}/editMessageText", json=data)
-    except: pass
+# --- TG UTILS ---
+def tg_send(chat_id, text, kb=None):
+    res = requests.post(f"{API}/sendMessage", json={"chat_id": chat_id, "text": text, "parse_mode": "HTML", "reply_markup": kb}).json()
+    return res["result"]["message_id"] if res.get("ok") else None
 
-def tg_delete(chat_id, message_id):
-    try: requests.post(f"{API}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id})
-    except: pass
+def tg_edit(chat_id, mid, text, kb=None):
+    requests.post(f"{API}/editMessageText", json={"chat_id": chat_id, "message_id": mid, "text": text, "parse_mode": "HTML", "reply_markup": kb})
 
-def tg_get_updates(offset):
-    try: return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 5}).json()
-    except: return {"ok": False, "result": []}
+def tg_delete(chat_id, mid):
+    requests.post(f"{API}/deleteMessage", json={"chat_id": chat_id, "message_id": mid})
 
 def is_user_in_both_groups(user_id):
     def check(gid):
-        try:
-            r = requests.get(f"{API}/getChatMember", params={"chat_id": gid, "user_id": user_id}).json()
-            return r.get("ok") and r["result"]["status"] in ["member", "administrator", "creator"]
-        except: return False
+        r = requests.get(f"{API}/getChatMember", params={"chat_id": gid, "user_id": user_id}).json()
+        return r.get("ok") and r["result"]["status"] in ["member", "administrator", "creator"]
     return check(GROUP_ID_1) and check(GROUP_ID_2)
 
-# --- LEVEL 2 API CLASS ---
-class MNITDirect:
+# --- LEVEL 2 ENGINE (API DIRECT) ---
+class MNIT_API:
     def __init__(self):
         self.client = httpx.AsyncClient(timeout=15.0, follow_redirects=True)
-        self.base_url = "https://x.mnitnetwork.com"
         self.is_logged_in = False
 
     async def login(self):
+        print("[TERMINAL] Mencoba Login ke MNIT Network...")
         try:
-            login_data = {"email": EMAIL_MNIT, "password": PASS_MNIT}
-            resp = await self.client.post(f"{self.base_url}/mauth/login", data=login_data)
-            if resp.status_code == 200 or "mdashboard" in str(resp.url):
+            resp = await self.client.post("https://x.mnitnetwork.com/mauth/login", data={"email": EMAIL_MNIT, "password": PASS_MNIT})
+            if "mdashboard" in str(resp.url) or resp.status_code == 200:
+                print(f"[TERMINAL] ✅ LOGIN BERHASIL! Menuju: {resp.url}")
                 self.is_logged_in = True
                 return True
+            print(f"[TERMINAL] ❌ LOGIN GAGAL! Redirect ke: {resp.url}")
             return False
-        except: return False
+        except Exception as e:
+            print(f"[TERMINAL] ❌ ERROR LOGIN: {e}")
+            return False
 
-    async def order_number(self, prefix, count):
-        tasks = []
+    async def order(self, prefix, count):
         for _ in range(count):
-            tasks.append(self.client.get(f"{self.base_url}/mdashboard/getnum", params={"range": prefix}, headers={"X-Requested-With": "XMLHttpRequest"}))
-        await asyncio.gather(*tasks)
+            await self.client.get(f"https://x.mnitnetwork.com/mdashboard/getnum?range={prefix}", headers={"X-Requested-With": "XMLHttpRequest"})
 
-    async def get_info(self):
-        resp = await self.client.get(f"{self.base_url}/mapi/v1/mdashboard/getnum/info?page=1", headers={"X-Requested-With": "XMLHttpRequest"})
-        return resp.json() if resp.status_code == 200 else None
+    async def fetch_info(self):
+        r = await self.client.get("https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/info?page=1", headers={"X-Requested-With": "XMLHttpRequest"})
+        return r.json() if r.status_code == 200 else None
 
-mnit_api = MNITDirect()
+mnit_engine = MNIT_API()
 
-# --- MODIFIED PROCESS INPUT (LEVEL 2) ---
-async def process_user_input(browser, user_id, prefix, click_count, username_tg, first_name_tg, message_id_to_edit=None):
-    msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
-    if not msg_id: msg_id = tg_send(user_id, get_progress_message(0, 0, prefix, click_count))
-    else: tg_edit(user_id, msg_id, get_progress_message(0, 0, prefix, click_count))
+# --- CORE PROCESSOR ---
+async def process_user_input(user_id, prefix, count, username, fname, mid=None):
+    if not mid: mid = tg_send(user_id, get_progress_message(0, 0, prefix, count))
+    else: tg_edit(user_id, mid, get_progress_message(0, 0, prefix, count))
 
-    try:
-        if not mnit_api.is_logged_in: await mnit_api.login()
-        
-        tg_edit(user_id, msg_id, get_progress_message(3, 0, prefix, click_count))
-        await mnit_api.order_number(prefix, click_count)
-        
-        await asyncio.sleep(2.0) # Tunggu sinkronisasi API
-        data = await mnit_api.get_info()
-        
-        if not data or not data.get("data"):
-            tg_edit(user_id, msg_id, "❌ Gagal mengambil data. Range mungkin salah atau habis.")
-            return
+    if not mnit_engine.is_logged_in: await mnit_engine.login()
 
-        found_numbers = []
-        for item in data["data"]:
-            num = normalize_number(item["number"])
-            if not is_in_cache(num):
-                country = item.get("country_name", "UNKNOWN").upper()
-                found_numbers.append({"number": num, "country": country})
-                if len(found_numbers) >= click_count: break
+    tg_edit(user_id, mid, get_progress_message(3, 0, prefix, count))
+    await mnit_engine.order(prefix, count)
+    
+    await asyncio.sleep(2)
+    tg_edit(user_id, mid, get_progress_message(5, 0, prefix, count))
+    
+    data = await mnit_engine.fetch_info()
+    if not data or not data.get("data"):
+        tg_edit(user_id, mid, "❌ Gagal mengambil nomor. Range mungkin salah atau habis.")
+        return
 
-        if not found_numbers:
-            tg_edit(user_id, msg_id, "❌ Nomor tidak ditemukan. Coba lagi.")
-            return
+    found = []
+    for item in data["data"]:
+        num = normalize_number(item["number"])
+        if not is_in_cache(num):
+            found.append({"number": num, "country": item.get("country_name", "UNKNOWN").upper()})
+            if len(found) >= count: break
 
-        tg_edit(user_id, msg_id, get_progress_message(12, 0, prefix, click_count))
-        
-        for entry in found_numbers:
-            save_cache({"number": entry['number'], "country": entry['country'], "user_id": user_id, "time": time.time()})
-            add_to_wait_list(entry['number'], user_id, username_tg, first_name_tg)
+    if not found:
+        tg_edit(user_id, mid, "❌ Nomor tidak ditemukan/sudah terpakai.")
+        return
 
-        main_country = found_numbers[0]['country']
-        emoji = GLOBAL_COUNTRY_EMOJI.get(main_country, "🗺️")
-        
-        if click_count == 10:
-            msg = "✅The number is already.\n\n<code>"
-            for entry in found_numbers: msg += f"{entry['number']}\n"
-            msg += "</code>"
-        else:
-            msg = f"✅ The number is ready\n\n"
-            for idx, num_data in enumerate(found_numbers):
-                msg += f"📞 Number {idx+1} : <code>{num_data['number']}</code>\n"
-            msg += f"{emoji} COUNTRY : {main_country}\n🏷️ Range : <code>{prefix}</code>\n\n<b>🤖 Number available please use, Waiting for OTP</b>"
+    tg_edit(user_id, mid, get_progress_message(12, 0, prefix, count))
+    
+    for e in found:
+        save_cache({"number": e['number'], "country": e['country'], "user_id": user_id, "time": time.time()})
+        add_to_wait_list(e['number'], user_id, username, fname)
 
-        kb = {"inline_keyboard": [[{"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"}],[{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}, {"text": "🌐 Change Range", "callback_data": "getnum"}]]}
-        tg_edit(user_id, msg_id, msg, reply_markup=kb)
+    country = found[0]['country']; emoji = GLOBAL_COUNTRY_EMOJI.get(country, "🗺️")
+    
+    if count == 10:
+        msg = f"✅The number is already.\n\n<code>" + "\n".join([x['number'] for x in found]) + "</code>"
+    else:
+        nums_text = "\n".join([f"📞 Number {i+1} : <code>{n['number']}</code>" for i, n in enumerate(found)])
+        msg = f"✅ The number is ready\n\n{nums_text}\n{emoji} COUNTRY : {country}\n🏷️ Range : <code>{prefix}</code>\n\n<b>🤖 Number available please use, Waiting for OTP</b>"
 
-    except Exception as e:
-        tg_edit(user_id, msg_id, f"❌ Error: {str(e)}")
+    kb = {"inline_keyboard": [[{"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"}],[{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}, {"text": "🌐 Change Range", "callback_data": "getnum"}]]}
+    tg_edit(user_id, mid, msg, kb)
 
 # --- TELEGRAM LOOP ---
-async def telegram_loop(browser):
-    global verified_users, waiting_broadcast_input, broadcast_message
+async def telegram_loop():
+    global verified_users; offset = 0
     verified_users = load_users()
-    offset = 0
-    while True:
-        data = tg_get_updates(offset)
-        for upd in data.get("result", []):
-            offset = upd["update_id"] + 1
-            if "message" in upd:
-                msg = upd["message"]; chat_id = msg["chat"]["id"]; user_id = msg["from"]["id"]
-                first_name = msg["from"].get("first_name", "User"); username_tg = msg["from"].get("username")
-                text = msg.get("text", "")
-
-                if user_id == ADMIN_ID:
-                    if text.startswith("/add"):
-                        waiting_admin_input.add(user_id)
-                        pending_message[user_id] = tg_send(user_id, "Kirim: <code>range > country</code>")
-                        continue
-                    elif text == "/info":
-                        waiting_broadcast_input.add(user_id)
-                        broadcast_message[user_id] = tg_send(user_id, "Kirim pesan siaran atau <code>.batal</code>")
-                        continue
-                    elif text.startswith("/get10akses "):
-                        try:
-                            tid = text.split(" ")[1]; save_akses_get10(tid)
-                            tg_send(user_id, f"✅ Akses diberikan ke {tid}")
-                        except: pass
-                        continue
-
-                if text == "/get10":
-                    if has_get10_access(user_id):
-                        get10_range_input.add(user_id)
-                        pending_message[user_id] = tg_send(user_id, "Kirim range (contoh 22507XXX)")
-                    else: tg_send(user_id, "❌ No access.")
-                    continue
-
-                if user_id in waiting_admin_input:
-                    waiting_admin_input.remove(user_id); new_ranges = []
-                    for line in text.split('\n'):
-                        if ' > ' in line:
-                            p = line.split(' > '); r_pre = p[0].strip(); c_name = p[1].strip().upper()
-                            new_ranges.append({"range": r_pre, "country": c_name, "emoji": GLOBAL_COUNTRY_EMOJI.get(c_name, "🗺️")})
-                    save_inline_ranges(new_ranges); tg_edit(user_id, pending_message.pop(user_id), "✅ Saved.")
-                    continue
-
-                # Handle Manual/Get10 Range
-                is_manual = re.match(r"^\+?\d{3,15}[Xx*#]+$", text.strip(), re.IGNORECASE)
-                if user_id in get10_range_input:
-                    get10_range_input.remove(user_id)
-                    if is_manual: await process_user_input(browser, user_id, text.strip(), 10, username_tg, first_name)
-                    continue
-                
-                if user_id in manual_range_input or (user_id in verified_users and is_manual):
-                    if user_id in manual_range_input: manual_range_input.remove(user_id)
-                    if is_manual: await process_user_input(browser, user_id, text.strip(), 1, username_tg, first_name)
-                    continue
-
-                if text == "/start":
-                    if is_user_in_both_groups(user_id):
-                        verified_users.add(user_id); save_users(user_id)
-                        tg_send(user_id, f"✅ Berhasil!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
-                    else:
-                        kb = {"inline_keyboard": [[{"text": "📌 Grup 1", "url": GROUP_LINK_1}], [{"text": "📌 Grup 2", "url": GROUP_LINK_2}], [{"text": "✅ Verif", "callback_data": "verify"}]]}
-                        tg_send(user_id, "Gabung grup dulu:", kb)
-                    continue
-
-            if "callback_query" in upd:
-                cq = upd["callback_query"]; user_id = cq["from"]["id"]; data_cb = cq["data"]
-                chat_id = cq["message"]["chat"]["id"]; mid = cq["message"]["message_id"]
-                fname = cq["from"].get("first_name"); uname = cq["from"].get("username")
-
-                if data_cb == "verify":
-                    if is_user_in_both_groups(user_id):
-                        verified_users.add(user_id); save_users(user_id)
-                        tg_edit(chat_id, mid, "✅ Berhasil!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
-                    continue
-                if data_cb == "getnum":
-                    ranges = load_inline_ranges()
-                    tg_edit(chat_id, mid, "Pilih Range:", generate_inline_keyboard(ranges))
-                    continue
-                if data_cb == "manual_range":
-                    manual_range_input.add(user_id); pending_message[user_id] = mid
-                    tg_edit(chat_id, mid, "Kirim range manual:")
-                    continue
-                if data_cb.startswith("select_range:"):
-                    await process_user_input(browser, user_id, data_cb.split(":")[1], 1, uname, fname, mid)
-                    continue
-                if data_cb.startswith("change_num:"):
-                    p = data_cb.split(":"); tg_delete(chat_id, mid)
-                    await process_user_input(browser, user_id, p[2], int(p[1]), uname, fname)
-                    continue
-        await asyncio.sleep(0.1)
-
-# --- TASKS & MAIN ---
-async def expiry_monitor_task():
     while True:
         try:
-            wl = load_wait_list(); ct = time.time(); updated = []
-            for item in wl:
-                if ct - item['timestamp'] > 1200:
-                    tg_send(item['user_id'], f"⚠️ <code>{item['number']}</code> expired.")
-                else: updated.append(item)
-            save_wait_list(updated)
-        except: pass
-        await asyncio.sleep(20)
+            updates = requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 10}).json()
+            for upd in updates.get("result", []):
+                offset = upd["update_id"] + 1
+                if "message" in upd:
+                    m = upd["message"]; uid = m["from"]["id"]; txt = m.get("text", ""); fn = m["from"].get("first_name", "User"); un = m["from"].get("username")
+                    mention = f"<a href='tg://user?id={uid}'>{fn}</a>"
 
-def initialize_files():
-    for f, c in {CACHE_FILE:"[]", INLINE_RANGE_FILE:"[]", USER_FILE:"[]", WAIT_FILE:"[]", AKSES_GET10_FILE:"[]"}.items():
+                    if uid == ADMIN_ID:
+                        if txt.startswith("/add"):
+                            waiting_admin_input.add(uid); pending_message[uid] = tg_send(uid, "Kirim format: <code>range > country</code>")
+                            continue
+                        elif txt == "/info":
+                            waiting_broadcast_input.add(uid); broadcast_message[uid] = tg_send(uid, "Kirim pesan siaran atau <code>.batal</code>")
+                            continue
+
+                    if txt == "/get10":
+                        if has_get10_access(uid):
+                            get10_range_input.add(uid); pending_message[uid] = tg_send(uid, "kirim range contoh 225071606XXX")
+                        else: tg_send(uid, "❌ No Access.")
+                        continue
+
+                    if uid in get10_range_input:
+                        get10_range_input.remove(uid); await process_user_input(uid, txt.strip(), 10, un, fn, pending_message.pop(uid, None))
+                        continue
+
+                    if uid in manual_range_input or (uid in verified_users and re.match(r"^\+?\d{3,15}[Xx*#]+$", txt.strip())):
+                        manual_range_input.discard(uid); await process_user_input(uid, txt.strip(), 1, un, fn, pending_message.pop(uid, None))
+                        continue
+
+                    if txt == "/start":
+                        if is_user_in_both_groups(uid):
+                            verified_users.add(uid); save_users(uid)
+                            tg_send(uid, f"✅ Verifikasi Berhasil, {mention}!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
+                        else:
+                            tg_send(uid, f"Halo {mention} 👋\nHarap gabung grup untuk verifikasi:", {"inline_keyboard": [[{"text": "📌 Grup 1", "url": GROUP_LINK_1}],[{"text": "📌 Grup 2", "url": GROUP_LINK_2}],[{"text": "✅ Verifikasi", "callback_data": "verify"}]]})
+                        continue
+
+                if "callback_query" in upd:
+                    cq = upd["callback_query"]; uid = cq["from"]["id"]; data = cq["data"]; mid = cq["message"]["message_id"]; fn = cq["from"].get("first_name"); un = cq["from"].get("username")
+                    
+                    if data == "verify":
+                        if is_user_in_both_groups(uid):
+                            verified_users.add(uid); save_users(uid)
+                            tg_edit(uid, mid, "✅ Berhasil!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
+                        continue
+                    if data == "getnum":
+                        ranges = load_inline_ranges(); kb_list = []
+                        for r in ranges: kb_list.append([{"text": f"{r['country']} {r['emoji']}", "callback_data": f"select_range:{r['range']}"}])
+                        kb_list.append([{"text": "Input Manual Range..🖊️", "callback_data": "manual_range"}])
+                        tg_edit(uid, mid, "<b>Pilih salah satu range di bawah atau input manual range, cek range terbaru @ceknewrange</b>", {"inline_keyboard": kb_list})
+                        continue
+                    if data == "manual_range":
+                        manual_range_input.add(uid); pending_message[uid] = mid; tg_edit(uid, mid, "Kirim Range manual:")
+                        continue
+                    if data.startswith("select_range:"):
+                        await process_user_input(uid, data.split(":")[1], 1, un, fn, mid)
+                    if data.startswith("change_num:"):
+                        p = data.split(":"); tg_delete(uid, mid); await process_user_input(uid, p[2], int(p[1]), un, fn)
+        except: await asyncio.sleep(1)
+
+# --- MAIN ---
+def init_files():
+    for f, c in {USER_FILE:"[]", CACHE_FILE:"[]", INLINE_RANGE_FILE:"[]", WAIT_FILE:"[]", AKSES_GET10_FILE:"[]"}.items():
         if not os.path.exists(f): 
             with open(f, "w") as file: file.write(c)
 
 async def main():
-    initialize_files()
+    init_files()
     sms_p = subprocess.Popen([sys.executable, "sms.py"])
+    print("[TERMINAL] Bot Standby. Menunggu perintah...")
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-            await asyncio.gather(telegram_loop(browser), expiry_monitor_task())
+        await telegram_loop()
     finally: sms_p.terminate()
 
 if __name__ == "__main__":
-    try: asyncio.run(main())
-    except KeyboardInterrupt: pass
+    asyncio.run(main())
