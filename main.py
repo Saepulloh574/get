@@ -11,7 +11,7 @@ import sys
 import time
 import math 
 
-# --- KONFIGURASI LOGIN (SESUAIKAN DISINI) ---
+# --- KONFIGURASI LOGIN ---
 EMAIL_MNIT = "muhamadreyhan0073@gmail.com"
 PASS_MNIT = "fd140206"
 TARGET_URL = "https://x.mnitnetwork.com/mdashboard/getnum"
@@ -59,7 +59,10 @@ def init_files():
             with open(f, "w") as file: file.write(c)
 
 def load_json(filename):
-    with open(filename, "r") as f: return json.load(f)
+    if not os.path.exists(filename): return []
+    with open(filename, "r") as f: 
+        try: return json.load(f)
+        except: return []
 
 def save_json(filename, data):
     with open(filename, "w") as f: json.dump(data, f, indent=2)
@@ -78,21 +81,27 @@ class MNIT_Engine:
             ss_path = "login_check.png"
             try:
                 await page.goto("https://x.mnitnetwork.com/mauth/login", timeout=60000)
-                # Gunakan selector tipe karena 'name' tidak ada (Hasil Inspect)
+                
+                # Gunakan selector tipe (Hasil Inspect)
                 await page.wait_for_selector("input[type='email']", timeout=20000)
-                await page.fill("input[type='email']", EMAIL_MNIT, delay=100)
-                await page.fill("input[type='password']", PASS_MNIT, delay=100)
+                
+                # PERBAIKAN: Gunakan fill() tanpa delay atau type() dengan delay
+                await page.type("input[type='email']", EMAIL_MNIT, delay=100)
+                await page.type("input[type='password']", PASS_MNIT, delay=100)
+                
                 await page.click("button[type='submit']")
                 
-                await asyncio.sleep(5) # Tunggu redirect
+                # Tunggu proses login/redirect selesai
+                await page.wait_for_load_state("networkidle", timeout=30000)
+                await asyncio.sleep(2) 
                 
                 current_url = page.url
                 await page.screenshot(path=ss_path)
 
                 if "mdashboard/getnum" in current_url:
-                    print(f"[TERMINAL] ✅ LOGIN BERHASIL ke {current_url}")
+                    print(f"[TERMINAL] ✅ LOGIN BERHASIL")
                     self.is_logged_in = True
-                    # Transfer session cookies ke httpx
+                    # Pindahkan cookies ke client API
                     cookies = await page.context.cookies()
                     for c in cookies:
                         self.client.cookies.set(c['name'], c['value'], domain=c['domain'])
@@ -100,48 +109,55 @@ class MNIT_Engine:
                     return True
                 else:
                     print(f"[TERMINAL] ❌ LOGIN GAGAL: Redirect ke {current_url}")
-                    tg_send_photo(ADMIN_ID, ss_path, f"❌ <b>LOGIN GAGAL</b>\nBot gagal login, nyasar ke: <code>{current_url}</code>")
+                    tg_send_photo(ADMIN_ID, ss_path, f"❌ <b>LOGIN GAGAL</b>\nBot nyasar ke: <code>{current_url}</code>")
                     return False
             except Exception as e:
                 await page.screenshot(path=ss_path)
-                tg_send_photo(ADMIN_ID, ss_path, f"❌ <b>ERROR LOGIN</b>\nDetail: <code>{str(e)[:100]}</code>")
+                print(f"[TERMINAL] ❌ ERROR: {e}")
+                tg_send_photo(ADMIN_ID, ss_path, f"❌ <b>ERROR LOGIN</b>\nDetail: <code>{str(e)[:150]}</code>")
                 return False
             finally:
                 await browser.close()
 
     async def process_get(self, uid, prefix, count, un, fn, mid):
-        if not self.is_logged_in: await self.auto_login()
-        
-        tg_edit(uid, mid, f"<code>Mengirim {count} permintaan..</code>")
-        for _ in range(count):
-            await self.client.get(f"{TARGET_URL}?range={prefix}", headers={"X-Requested-With": "XMLHttpRequest"})
-        
-        await asyncio.sleep(3)
-        r = await self.client.get("https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/info?page=1", headers={"X-Requested-With": "XMLHttpRequest"})
-        
-        if r.status_code == 200:
-            data = r.json().get("data", [])
-            found = data[:count]
-            if not found:
-                tg_edit(uid, mid, "❌ Nomor tidak ditemukan di tabel.")
+        if not self.is_logged_in: 
+            success = await self.auto_login()
+            if not success:
+                tg_edit(uid, mid, "❌ Sistem sedang bermasalah (Login Gagal).")
                 return
+        
+        tg_edit(uid, mid, f"<code>Mengirim permintaan nomor..</code>")
+        try:
+            for _ in range(count):
+                await self.client.get(f"{TARGET_URL}?range={prefix}", headers={"X-Requested-With": "XMLHttpRequest"})
+            
+            await asyncio.sleep(3)
+            r = await self.client.get("https://x.mnitnetwork.com/mapi/v1/mdashboard/getnum/info?page=1", headers={"X-Requested-With": "XMLHttpRequest"})
+            
+            if r.status_code == 200:
+                data = r.json().get("data", [])
+                found = data[:count]
+                if not found:
+                    tg_edit(uid, mid, "❌ Nomor belum muncul di tabel, coba lagi.")
+                    return
 
-            # Simpan ke cache & wait list
-            wait_list = load_json(WAIT_FILE)
-            identity = f"@{un}" if un else f'<a href="tg://user?id={uid}">{fn}</a>'
-            
-            res_msg = "✅ <b>The number is ready</b>\n\n"
-            for i, n in enumerate(found):
-                num = n['number']
-                wait_list.append({"number": num, "user_id": uid, "username": identity, "timestamp": time.time()})
-                res_msg += f"📞 Number {i+1} : <code>{num}</code>\n"
-            
-            save_json(WAIT_FILE, wait_list)
-            res_msg += f"\n🏷️ Range : <code>{prefix}</code>\n\n<b>🤖 Waiting for OTP</b>"
-            kb = {"inline_keyboard": [[{"text": "🔄 Change Number", "callback_data": f"change_num:1:{prefix}"}],[{"text": "🌐 Change Range", "callback_data": "getnum"}]]}
-            tg_edit(uid, mid, res_msg, kb)
-        else:
-            tg_edit(uid, mid, "❌ Gagal koneksi ke server API.")
+                wait_list = load_json(WAIT_FILE)
+                identity = f"@{un}" if un else f'<a href="tg://user?id={uid}">{fn}</a>'
+                
+                res_msg = "✅ <b>The number is ready</b>\n\n"
+                for i, n in enumerate(found):
+                    num = n['number']
+                    wait_list.append({"number": num, "user_id": uid, "username": identity, "timestamp": time.time()})
+                    res_msg += f"📞 Number {i+1} : <code>{num}</code>\n"
+                
+                save_json(WAIT_FILE, wait_list)
+                res_msg += f"\n🏷️ Range : <code>{prefix}</code>\n\n<b>🤖 Waiting for OTP</b>"
+                kb = {"inline_keyboard": [[{"text": "🔄 Change Number", "callback_data": f"change_num:1:{prefix}"}],[{"text": "🌐 Change Range", "callback_data": "getnum"}]]}
+                tg_edit(uid, mid, res_msg, kb)
+            else:
+                tg_edit(uid, mid, "❌ Gagal mengambil data dari API MNIT.")
+        except Exception as e:
+            tg_edit(uid, mid, f"❌ Terjadi kesalahan: {str(e)[:50]}")
 
 bot_engine = MNIT_Engine()
 
@@ -155,17 +171,17 @@ async def telegram_loop():
             for upd in updates.get("result", []):
                 offset = upd["update_id"] + 1
                 if "message" in upd:
-                    m = upd["message"]; uid = m["from"]["id"]; txt = m.get("text", ""); fn = m["from"].get("first_name"); un = m["from"].get("username")
+                    m = upd["message"]; uid = m["from"]["id"]; txt = m.get("text", ""); fn = m["from"].get("first_name", "User"); un = m["from"].get("username")
                     
                     if txt == "/start":
                         if is_user_in_both_groups(uid):
                             verified_users.add(uid); save_json(USER_FILE, list(verified_users))
                             tg_send(uid, f"✅ Verifikasi Berhasil, <a href='tg://user?id={uid}'>{fn}</a>!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
                         else:
-                            tg_send(uid, f"Halo {fn}, Gabung grup dulu:", {"inline_keyboard": [[{"text": "📌 Grup 1", "url": GROUP_LINK_1}],[{"text": "📌 Grup 2", "url": GROUP_LINK_2}],[{"text": "✅ Verifikasi", "callback_data": "verify"}]]})
+                            tg_send(uid, f"Halo {fn}, Harap gabung grup dulu untuk akses:", {"inline_keyboard": [[{"text": "📌 Grup 1", "url": GROUP_LINK_1}],[{"text": "📌 Grup 2", "url": GROUP_LINK_2}],[{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}]]})
                     
                     elif re.match(r"^\d+[Xx*]+$", txt.strip()) and uid in verified_users:
-                        mid = tg_send(uid, "<code>Sedang memproses...</code>")
+                        mid = tg_send(uid, "<code>Sedang memproses permintaan...</code>")
                         await bot_engine.process_get(uid, txt.strip(), 1, un, fn, mid)
 
                 elif "callback_query" in upd:
@@ -174,15 +190,25 @@ async def telegram_loop():
                         kb = {"inline_keyboard": [[{"text": "Input Manual Range..🖊️", "callback_data": "manual_range"}]]}
                         tg_edit(uid, mid, "<b>Pilih salah satu range di bawah atau input manual range, cek range terbaru @ceknewrange</b>", kb)
                     elif data == "manual_range":
-                        tg_edit(uid, mid, "Kirim Range manual:")
-        except Exception: await asyncio.sleep(1)
+                        tg_edit(uid, mid, "<b>Input Manual Range</b>\n\nKirim range anda, contoh: <code>2327600XXX</code>")
+                    elif data == "verify":
+                        if is_user_in_both_groups(uid):
+                            verified_users.add(uid); save_json(USER_FILE, list(verified_users))
+                            tg_edit(uid, mid, "✅ Verifikasi Berhasil! Silakan klik Get Number.", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
+                        else:
+                            tg_send(uid, "❌ Kamu belum bergabung di semua grup.")
+        except: await asyncio.sleep(1)
 
 async def main():
     init_files()
-    await bot_engine.auto_login() # Login di awal
-    # Start monitor OTP (sms.py)
-    subprocess.Popen([sys.executable, "sms.py"])
-    print("[STARTED] Bot is Running...")
+    # Menjalankan login otomatis saat startup
+    await bot_engine.auto_login()
+    
+    # Menjalankan monitor OTP
+    if os.path.exists("sms.py"):
+        subprocess.Popen([sys.executable, "sms.py"])
+        
+    print("[STARTED] Bot is running and monitoring...")
     await telegram_loop()
 
 if __name__ == "__main__":
