@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import requests
-import httpx
 import re
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from dotenv import load_dotenv
@@ -11,18 +10,46 @@ import sys
 import time
 import math 
 
-# --- KONFIGURASI LOGIN MNIT (SESUAIKAN) ---
-EMAIL_MNIT = "muhamadreyhan0073@gmail.com"
-PASS_MNIT = "fd140206"
-TARGET_URL = "https://x.mnitnetwork.com/mdashboard/getnum"
+# --- CONFIGURATION & PATHS ---
+load_dotenv()
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+try:
+    GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
+    GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
+    ADMIN_ID = int(os.getenv("ADMIN_ID"))
+except (TypeError, ValueError) as e:
+    print(f"[FATAL] Environment variables missing: {e}")
+    sys.exit(1)
 
-# --- ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
+API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+BASE_WEB_URL = "https://x.mnitnetwork.com/mdashboard/getnum" 
+SESSION_DIR = "playwright_session" # Folder to store login cookies/session
+
+# --- FILE CONSTANTS ---
+USER_FILE = "user.json" 
+CACHE_FILE = "cache.json"
+INLINE_RANGE_FILE = "inline.json"
+SMC_FILE = "smc.json"
+WAIT_FILE = "wait.json"
+AKSES_GET10_FILE = "aksesget10.json"
+BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
+GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
+GROUP_LINK_2 = "https://t.me/zura14g" 
+
+# --- ASYNCIO LOCK & GLOBAL VARS ---
 playwright_lock = asyncio.Lock()
-# Tambahan Variable Global untuk Tab Standby
 shared_page = None 
-# ----------------------------------------------
+waiting_broadcast_input = set() 
+broadcast_message = {} 
+verified_users = set()
+waiting_admin_input = set()
+manual_range_input = set() 
+get10_range_input = set()
+pending_message = {}
+sent_numbers = set()
+last_used_range = {}
 
-# --- DATA GLOBAL EMOJI NEGARA ---
+# --- COUNTRY EMOJI DATA ---
 GLOBAL_COUNTRY_EMOJI = {
   "AFGHANISTAN": "🇦🇫", "ALBANIA": "🇦🇱", "ALGERIA": "🇩🇿", "ANDORRA": "🇦🇩", "ANGOLA": "🇦🇴",
   "ANTIGUA AND BARBUDA": "🇦🇬", "ARGENTINA": "🇦🇷", "ARMENIA": "🇦🇲", "AUSTRALIA": "🇦🇺", "AUSTRIA": "🇦🇹",
@@ -64,13 +91,11 @@ GLOBAL_COUNTRY_EMOJI = {
   "UNITED STATES": "🇺🇸", "URUGUAY": "🇺🇾", "UZBEKISTAN": "🇺🇿", "VANUATU": "🇻🇺", "VATICAN CITY": "🇻🇦",
   "VENEZUELA": "🇻🇪", "VIETNAM": "🇻🇳", "YEMEN": "🇾🇪", "ZAMBIA": "🇿🇲", "ZIMBABWE": "🇿🇼", "UNKNOWN": "🗺️" 
 }
-# ----------------------------------------------
 
-# --- KONFIGURASI PROGRESS BAR GLOBAL ---
+# --- PROGRESS BAR CONFIG ---
 MAX_BAR_LENGTH = 12 
 FILLED_CHAR = "█"
 EMPTY_CHAR = "░"
-
 STATUS_MAP = {
     0:  "Menunggu di antrian sistem aktif..",
     3:  "Mengirim permintaan nomor baru go.",
@@ -85,46 +110,27 @@ def get_progress_message(current_step, total_steps, prefix_range, num_count):
     filled_count = math.ceil(progress_ratio * MAX_BAR_LENGTH)
     empty_count = MAX_BAR_LENGTH - filled_count
     progress_bar = FILLED_CHAR * filled_count + EMPTY_CHAR * empty_count
-    current_status = STATUS_MAP.get(current_step, "Sedang memproses..")
+    
+    current_status = STATUS_MAP.get(current_step)
+    if not current_status:
+        if current_step < 3: current_status = STATUS_MAP[0]
+        elif current_step < 5: current_status = STATUS_MAP[4]
+        elif current_step < 8: current_status = STATUS_MAP[5]
+        elif current_step < 12: current_status = STATUS_MAP[8]
+        else: current_status = STATUS_MAP[12]
+
     return (
-    f"<code>{current_status}</code>\n"
-    f"<blockquote>Range: <code>{prefix_range}</code> | Jumlah: <code>{num_count}</code></blockquote>\n"
-    f"<code>Load:</code> [{progress_bar}]"
-)
+        f"<code>{current_status}</code>\n"
+        f"<blockquote>Range: <code>{prefix_range}</code> | Jumlah: <code>{num_count}</code></blockquote>\n"
+        f"<code>Load:</code> [{progress_bar}]"
+    )
 
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-GROUP_ID_1 = int(os.getenv("GROUP_ID_1"))
-GROUP_ID_2 = int(os.getenv("GROUP_ID_2"))
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-BASE_WEB_URL = "https://x.mnitnetwork.com/mdashboard/getnum" 
-
-# --- KONSTANTA FILE ---
-USER_FILE = "user.json" 
-CACHE_FILE = "cache.json"
-INLINE_RANGE_FILE = "inline.json"
-SMC_FILE = "smc.json"
-WAIT_FILE = "wait.json"
-AKSES_GET10_FILE = "aksesget10.json"
-GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
-GROUP_LINK_2 = "https://t.me/zura14g" 
-
-verified_users = set()
-waiting_admin_input = set()
-manual_range_input = set() 
-get10_range_input = set()
-pending_message = {}
-last_used_range = {}
-waiting_broadcast_input = set() 
-broadcast_message = {} 
-
-# --- FUNGSI UTILITAS MANAJEMEN FILE ---
+# --- FILE UTILITIES ---
 def load_users():
     if os.path.exists(USER_FILE):
         with open(USER_FILE, "r") as f:
             try: return set(json.load(f))
-            except: return set()
+            except json.JSONDecodeError: return set()
     return set()
 
 def save_users(user_id):
@@ -137,7 +143,7 @@ def load_cache():
     if os.path.exists(CACHE_FILE):
         with open(CACHE_FILE, "r") as f:
             try: return json.load(f)
-            except: return []
+            except json.JSONDecodeError: return []
     return []
 
 def save_cache(number_entry):
@@ -148,14 +154,14 @@ def save_cache(number_entry):
 
 def is_in_cache(number):
     cache = load_cache()
-    norm = normalize_number(number) 
-    return any(normalize_number(entry["number"]) == norm for entry in cache)
+    normalized_number = normalize_number(number) 
+    return any(normalize_number(entry["number"]) == normalized_number for entry in cache)
 
 def load_inline_ranges():
     if os.path.exists(INLINE_RANGE_FILE):
         with open(INLINE_RANGE_FILE, "r") as f:
             try: return json.load(f)
-            except: return []
+            except json.JSONDecodeError: return []
     return []
 
 def save_inline_ranges(ranges):
@@ -165,7 +171,7 @@ def load_akses_get10():
     if os.path.exists(AKSES_GET10_FILE):
         with open(AKSES_GET10_FILE, "r") as f:
             try: return set(json.load(f))
-            except: return set()
+            except json.JSONDecodeError: return set()
     return set()
 
 def save_akses_get10(user_id_to_add):
@@ -175,7 +181,8 @@ def save_akses_get10(user_id_to_add):
 
 def has_get10_access(user_id):
     if user_id == ADMIN_ID: return True
-    return user_id in load_akses_get10()
+    akses_list = load_akses_get10()
+    return user_id in akses_list
 
 def generate_inline_keyboard(ranges):
     keyboard = []
@@ -195,7 +202,7 @@ def load_wait_list():
     if os.path.exists(WAIT_FILE):
         with open(WAIT_FILE, "r") as f:
             try: return json.load(f)
-            except: return []
+            except json.JSONDecodeError: return []
     return []
 
 def save_wait_list(data):
@@ -203,10 +210,18 @@ def save_wait_list(data):
 
 def add_to_wait_list(number, user_id, username, first_name):
     wait_list = load_wait_list()
-    norm = normalize_number(number)
-    final_identity = f"@{username.replace('@', '')}" if username and username != "None" else f'<a href="tg://user?id={user_id}">{first_name}</a>'
-    wait_list = [item for item in wait_list if item['number'] != norm]
-    wait_list.append({"number": norm, "user_id": user_id, "username": final_identity, "timestamp": time.time()})
+    normalized_number = normalize_number(number)
+    if username and username != "None":
+        final_identity = f"@{username.replace('@', '')}"
+    else:
+        final_identity = f'<a href="tg://user?id={user_id}">{first_name}</a>'
+    wait_list = [item for item in wait_list if item['number'] != normalized_number]
+    wait_list.append({
+        "number": normalized_number, 
+        "user_id": user_id, 
+        "username": final_identity, 
+        "timestamp": time.time()
+    })
     save_wait_list(wait_list)
 
 def normalize_number(number):
@@ -215,70 +230,68 @@ def normalize_number(number):
         normalized_number = '+' + normalized_number
     return normalized_number
 
-# --- TG API UTILS ---
+# --- TELEGRAM API UTILS ---
 def tg_send(chat_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup: data["reply_markup"] = reply_markup
-    r = requests.post(f"{API}/sendMessage", json=data).json()
-    return r["result"]["message_id"] if r.get("ok") else None
-
-def tg_send_photo(chat_id, photo_path, caption):
-    with open(photo_path, 'rb') as f:
-        requests.post(f"{API}/sendPhoto", params={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"}, files={"photo": f})
+    try:
+        r = requests.post(f"{API}/sendMessage", json=data).json()
+        return r["result"]["message_id"] if r.get("ok") else None
+    except: return None
 
 def tg_edit(chat_id, message_id, text, reply_markup=None):
     data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if reply_markup: data["reply_markup"] = reply_markup
-    requests.post(f"{API}/editMessageText", json=data)
+    try: requests.post(f"{API}/editMessageText", json=data)
+    except: pass 
 
 def tg_delete(chat_id, message_id):
-    requests.post(f"{API}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id})
+    try: requests.post(f"{API}/deleteMessage", json={"chat_id": chat_id, "message_id": message_id})
+    except: pass 
+
+def tg_send_action(chat_id, action="typing"):
+    try: requests.post(f"{API}/sendChatAction", data={"chat_id": chat_id, "action": action})
+    except: pass 
+
+def tg_get_updates(offset):
+    try: return requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 5}).json()
+    except: return {"ok": False, "result": []}
+
+def is_user_in_group(user_id, group_id):
+    try:
+        r = requests.get(f"{API}/getChatMember", params={"chat_id": group_id, "user_id": user_id}).json()
+        return r["result"]["status"] in ["member", "administrator", "creator"] if r.get("ok") else False
+    except: return False
 
 def is_user_in_both_groups(user_id):
-    def check(gid):
-        r = requests.get(f"{API}/getChatMember", params={"chat_id": gid, "user_id": user_id}).json()
-        return r.get("ok") and r["result"]["status"] in ["member", "administrator", "creator"]
-    return check(GROUP_ID_1) and check(GROUP_ID_2)
+    return is_user_in_group(user_id, GROUP_ID_1) and is_user_in_group(user_id, GROUP_ID_2)
 
-# --- LOGIN AUTO ENGINE ---
-async def auto_login_mnit(browser_context):
-    global shared_page
-    print("[TERMINAL] Menjalankan Auto-Login...")
-    page = await browser_context.new_page()
-    ss_path = "login_status.png"
+def clear_pending_updates():
     try:
-        await page.goto("https://x.mnitnetwork.com/mauth/login", timeout=60000)
-        await page.wait_for_selector("input[type='email']", timeout=20000)
-        await page.type("input[type='email']", EMAIL_MNIT, delay=100)
-        await page.type("input[type='password']", PASS_MNIT, delay=100)
-        await page.click("button[type='submit']")
-        
-        # Tunggu redirect ke dashboard
-        try:
-            await page.wait_for_url("**/mdashboard/getnum", timeout=30000)
-        except:
-            pass 
-            
-        await asyncio.sleep(3)
-        await page.screenshot(path=ss_path)
-        
-        if "mdashboard/getnum" in page.url:
-            print("[TERMINAL] ✅ LOGIN BERHASIL")
-            tg_send_photo(ADMIN_ID, ss_path, "✅ <b>LOGIN BERHASIL</b>\nBot sudah masuk ke Dashboard.")
-            shared_page = page 
-            return True
-        else:
-            print(f"[TERMINAL] ❌ LOGIN GAGAL: {page.url}")
-            tg_send_photo(ADMIN_ID, ss_path, f"❌ <b>LOGIN GAGAL</b>\nURL: {page.url}")
-            await page.close()
-            return False
-    except Exception as e:
-        await page.screenshot(path=ss_path)
-        tg_send_photo(ADMIN_ID, ss_path, f"❌ <b>ERROR LOGIN</b>\n{str(e)[:100]}")
-        await page.close()
-        return False
+        r = requests.get(f"{API}/getUpdates", params={"offset": -1, "timeout": 1}).json()
+        if r.get("ok") and r.get("result"):
+            last_id = r["result"][-1]["update_id"]
+            requests.get(f"{API}/getUpdates", params={"offset": last_id + 1, "timeout": 1})
+    except: pass
 
-# --- PLAYWRIGHT HELPERS ---
+async def tg_broadcast(message_text, admin_id):
+    user_ids = list(load_users())
+    s, f = 0, 0
+    admin_msg_id = tg_send(admin_id, f"🔄 Memulai siaran ke **{len(user_ids)}** pengguna...")
+    for i, user_id in enumerate(user_ids):
+        if i % 10 == 0 and admin_msg_id:
+            tg_edit(admin_id, admin_msg_id, f"🔄 Siaran: **{i}/{len(user_ids)}** (S:{s}, G:{f})")
+        if tg_send(user_id, message_text): s += 1
+        else: f += 1
+        await asyncio.sleep(0.05) 
+    tg_edit(admin_id, admin_msg_id, f"✅ Selesai!\n👥 Total: {len(user_ids)}\n🟢 Sukses: {s}\n🔴 Gagal: {f}")
+
+async def action_task(chat_id):
+    while True:
+        tg_send_action(chat_id)
+        await asyncio.sleep(4.5)
+
+# --- SCRAPING LOGIC ---
 async def get_number_and_country_from_row(row_selector, page):
     try:
         row = page.locator(row_selector) 
@@ -295,7 +308,7 @@ async def get_number_and_country_from_row(row_selector, page):
         country_el = row.locator("td:nth-child(2) span.text-slate-200")
         country_list = await country_el.all_inner_texts()
         country = country_list[0].strip().upper() if country_list else "UNKNOWN"
-        return (number, country, status_text) if number and len(number) > 5 else (None, None, None)
+        return (number, country, status_text) if (number and len(number) > 5) else (None, None, None)
     except: return None, None, None
 
 async def get_all_numbers_parallel(page, num_to_fetch):
@@ -310,192 +323,245 @@ async def get_all_numbers_parallel(page, num_to_fetch):
 async def process_user_input(browser_context, user_id, prefix, click_count, username_tg, first_name_tg, message_id_to_edit=None):
     global shared_page, last_used_range
     msg_id = message_id_to_edit if message_id_to_edit else pending_message.pop(user_id, None)
+    action_loop_task = None 
     num_to_fetch = click_count 
+
+    if playwright_lock.locked():
+        if not msg_id: msg_id = tg_send(user_id, get_progress_message(0, 0, prefix, num_to_fetch))
+        else: tg_edit(user_id, msg_id, get_progress_message(0, 0, prefix, num_to_fetch))
 
     async with playwright_lock:
         try:
-            current_step = 0 
-            if not shared_page or shared_page.is_closed():
-                await auto_login_mnit(browser_context)
+            action_loop_task = asyncio.create_task(action_task(user_id))
+            start_operation_time = time.time()
+            if not msg_id: msg_id = tg_send(user_id, get_progress_message(0, 0, prefix, num_to_fetch))
             
-            if not msg_id:
-                msg_id = tg_send(user_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
+            if not shared_page:
+                shared_page = await browser_context.new_page()
+                await shared_page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
+
+            INPUT_SELECTOR, BUTTON_SELECTOR = "input[name='numberrange']", "button:has-text('Get Number')" 
+            await shared_page.wait_for_selector(INPUT_SELECTOR, state='visible', timeout=10000)
+            await shared_page.fill(INPUT_SELECTOR, prefix)
             
-            await shared_page.fill("input[name='numberrange']", prefix)
-            await shared_page.click("button:has-text('Get Number')", force=True)
+            tg_edit(user_id, msg_id, get_progress_message(3, 0, prefix, num_to_fetch))
+            for _ in range(click_count): await shared_page.click(BUTTON_SELECTOR, force=True)
             
-            # Start logic progress
-            current_step = 3
-            tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
+            await asyncio.sleep(0.5)
+            tg_edit(user_id, msg_id, get_progress_message(4, 0, prefix, num_to_fetch))
             
             found_numbers = []
-            start_op = time.time()
             for round_num in range(2):
                 if round_num == 1 and len(found_numbers) < num_to_fetch:
-                    await shared_page.click("button:has-text('Get Number')", force=True)
-                    current_step = 8
+                    await shared_page.click(BUTTON_SELECTOR, force=True)
+                    tg_edit(user_id, msg_id, get_progress_message(8, 0, prefix, num_to_fetch))
                 
                 start_time = time.time()
                 while (time.time() - start_time) < 5.0:
                     found_numbers = await get_all_numbers_parallel(shared_page, num_to_fetch)
-                    if len(found_numbers) >= num_to_fetch:
-                        current_step = 12
-                        break
-                    # Visual Progress
-                    target = int(12 * (time.time() - start_op) / 12)
-                    if target > current_step and target <= 11:
-                        current_step = target
-                        tg_edit(user_id, msg_id, get_progress_message(current_step, 0, prefix, num_to_fetch))
-                    await asyncio.sleep(0.5)
+                    if len(found_numbers) >= num_to_fetch: break
+                    await asyncio.sleep(0.25)
                 if len(found_numbers) >= num_to_fetch: break
-
+            
             if not found_numbers:
-                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN.")
+                tg_edit(user_id, msg_id, "❌ NOMOR TIDAK DI TEMUKAN. Coba lagi atau ganti range.")
                 return 
 
-            for entry in found_numbers[:num_to_fetch]:
+            tg_edit(user_id, msg_id, get_progress_message(12, 0, prefix, num_to_fetch))
+            for entry in found_numbers:
                 save_cache({"number": entry['number'], "country": entry['country'], "user_id": user_id, "time": time.time()})
                 add_to_wait_list(entry['number'], user_id, username_tg, first_name_tg)
             
             last_used_range[user_id] = prefix 
             main_country = found_numbers[0]['country']
             emoji = GLOBAL_COUNTRY_EMOJI.get(main_country, "🗺️") 
-
+            
             if num_to_fetch == 10:
-                msg = "✅The number is already.\n\n<code>"
-                for entry in found_numbers[:10]: msg += f"{entry['number']}\n"
-                msg += "</code>"
+                msg = "✅The number is already.\n\n<code>" + "\n".join([e['number'] for e in found_numbers[:10]]) + "</code>"
             else:
-                msg = f"✅ The number is ready\n\n"
+                msg = "✅ The number is ready\n\n"
                 for idx, num_data in enumerate(found_numbers[:num_to_fetch]):
-                    msg += f"📞 Number {idx+1 if num_to_fetch > 1 else ''} : <code>{num_data['number']}</code>\n"
-                msg += f"{emoji} COUNTRY : {main_country}\n🏷️ Range   : <code>{prefix}</code>\n\n<b>🤖 Waiting for OTP</b>"
+                    msg += f"📞 Number {' ' if num_to_fetch==1 else idx+1} : <code>{num_data['number']}</code>\n"
+                msg += f"{emoji} COUNTRY : {main_country}\n🏷️ Range   : <code>{prefix}</code>\n\n<b>🤖 Number available please use, Waiting for OTP</b>\n"
 
-            kb = {"inline_keyboard": [
+            inline_kb = {"inline_keyboard": [
                 [{"text": "🔄 Change 1 Number", "callback_data": f"change_num:1:{prefix}"}],
+                [{"text": "🔄 Change 3 Number", "callback_data": f"change_num:3:{prefix}"}],
                 [{"text": "🔐 OTP Grup", "url": GROUP_LINK_1}, {"text": "🌐 Change Range", "callback_data": "getnum"}]
             ]}
-            tg_edit(user_id, msg_id, msg, kb)
+            tg_edit(user_id, msg_id, msg, reply_markup=inline_kb)
         except Exception as e:
-            tg_edit(user_id, msg_id, f"❌ Error: {str(e)[:50]}")
+            if msg_id: tg_edit(user_id, msg_id, f"❌ Error: {type(e).__name__}")
+        finally:
+            if action_loop_task: action_loop_task.cancel()
 
-# --- BROADCAST ---
-async def tg_broadcast(message_text, admin_id):
-    users = list(load_users())
-    tg_send(admin_id, f"🔄 Memulai siaran ke {len(users)} user...")
-    for u in users:
-        tg_send(u, message_text)
-        await asyncio.sleep(0.05)
-    tg_send(admin_id, "✅ Selesai.")
-
-# --- TELEGRAM LOOP ---
+# --- MAIN LOOPS ---
 async def telegram_loop(browser_context):
-    global verified_users, waiting_admin_input, manual_range_input, get10_range_input, waiting_broadcast_input
+    global verified_users, waiting_broadcast_input, broadcast_message
     verified_users = load_users()
     offset = 0
     while True:
+        data = tg_get_updates(offset)
+        for upd in data.get("result", []):
+            offset = upd["update_id"] + 1
+            if "message" in upd:
+                msg = upd["message"]
+                user_id, text = msg["from"]["id"], msg.get("text", "")
+                f_name, u_tg = msg["from"].get("first_name", "User"), msg["from"].get("username")
+                mention = f"<a href='tg://user?id={user_id}'>{f_name}</a>"
+
+                if user_id == ADMIN_ID:
+                    if text.startswith("/add"):
+                        waiting_admin_input.add(user_id)
+                        pending_message[user_id] = tg_send(user_id, "Kirim format: <code>range > country</code>")
+                        continue
+                    elif text == "/info":
+                        waiting_broadcast_input.add(user_id)
+                        broadcast_message[user_id] = tg_send(user_id, "Kirim pesan siaran atau <code>.batal</code>")
+                        continue
+                    elif text.startswith("/get10akses "):
+                        try:
+                            t_id = text.split(" ")[1]
+                            save_akses_get10(t_id)
+                            tg_send(user_id, f"✅ Akses /get10 diberikan ke {t_id}")
+                        except: pass
+                        continue
+
+                if text == "/get10" and has_get10_access(user_id):
+                    get10_range_input.add(user_id)
+                    pending_message[user_id] = tg_send(user_id, "Kirim range (contoh: 225071606XXX)")
+                    continue
+
+                if user_id in waiting_admin_input:
+                    waiting_admin_input.remove(user_id)
+                    new_r = []
+                    for line in text.strip().split('\n'):
+                        if ' > ' in line:
+                            p = line.split(' > ')
+                            new_r.append({"range": p[0].strip(), "country": p[1].strip().upper(), "emoji": GLOBAL_COUNTRY_EMOJI.get(p[1].strip().upper(), "🗺️")})
+                    save_inline_ranges(new_r)
+                    tg_edit(user_id, pending_message.pop(user_id), f"✅ Tersimpan {len(new_r)} range.")
+                    continue
+
+                if user_id in waiting_broadcast_input:
+                    waiting_broadcast_input.remove(user_id)
+                    p_id = broadcast_message.pop(user_id)
+                    if text.lower() == ".batal": tg_edit(user_id, p_id, "❌ Batal.")
+                    else: await tg_broadcast(text, user_id)
+                    continue
+
+                if user_id in get10_range_input:
+                    get10_range_input.remove(user_id)
+                    await process_user_input(browser_context, user_id, text.strip(), 10, u_tg, f_name, pending_message.pop(user_id))
+                    continue
+                
+                is_man = re.match(r"^\+?\d{3,15}[Xx*#]+$", text.strip(), re.IGNORECASE)
+                if (user_id in manual_range_input or (user_id in verified_users and is_man)):
+                    if user_id in manual_range_input: manual_range_input.remove(user_id)
+                    await process_user_input(browser_context, user_id, text.strip(), 1, u_tg, f_name, pending_message.pop(user_id, None))
+                    continue
+
+                if text == "/start":
+                    if is_user_in_both_groups(user_id):
+                        verified_users.add(user_id); save_users(user_id)
+                        tg_send(user_id, f"✅ Berhasil {mention}!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
+                    else:
+                        tg_send(user_id, f"Halo {mention} 👋\nGabung dulu:", {"inline_keyboard": [[{"text": "Grup 1", "url": GROUP_LINK_1}],[{"text": "Grup 2", "url": GROUP_LINK_2}],[{"text": "✅ Verifikasi", "callback_data": "verify"}]]})
+
+            if "callback_query" in upd:
+                cq = upd["callback_query"]
+                u_id, d_cb, c_id, m_id = cq["from"]["id"], cq["data"], cq["message"]["chat"]["id"], cq["message"]["message_id"]
+                u_tg, f_tg = cq["from"].get("username"), cq["from"].get("first_name", "User")
+
+                if d_cb == "verify":
+                    if is_user_in_both_groups(u_id):
+                        verified_users.add(u_id); save_users(u_id)
+                        tg_edit(c_id, m_id, "✅ Berhasil!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
+                    else: tg_edit(c_id, m_id, "❌ Belum gabung.", {"inline_keyboard": [[{"text": "Grup 1", "url": GROUP_LINK_1}],[{"text": "Grup 2", "url": GROUP_LINK_2}],[{"text": "✅ Verifikasi", "callback_data": "verify"}]]})
+                elif d_cb == "getnum" and u_id in verified_users:
+                    rgs = load_inline_ranges()
+                    tg_edit(c_id, m_id, "<b>Pilih Range:</b>", generate_inline_keyboard(rgs))
+                elif d_cb == "manual_range" and u_id in verified_users:
+                    manual_range_input.add(u_id); pending_message[u_id] = m_id
+                    tg_edit(c_id, m_id, "Kirim range (contoh: 2327600XXX)")
+                elif d_cb.startswith("select_range:") and u_id in verified_users:
+                    await process_user_input(browser_context, u_id, d_cb.split(":")[1], 1, u_tg, f_tg, m_id)
+                elif d_cb.startswith("change_num:") and u_id in verified_users:
+                    tg_delete(c_id, m_id)
+                    await process_user_input(browser_context, u_id, d_cb.split(":")[2], int(d_cb.split(":")[1]), u_tg, f_tg)
+        await asyncio.sleep(0.05)
+
+async def expiry_monitor_task():
+    while True:
         try:
-            r = requests.get(f"{API}/getUpdates", params={"offset": offset, "timeout": 5}).json()
-            for upd in r.get("result", []):
-                offset = upd["update_id"] + 1
-                if "message" in upd:
-                    msg = upd["message"]; chat_id = msg["chat"]["id"]; user_id = msg["from"]["id"]
-                    text = msg.get("text", ""); fn = msg["from"].get("first_name", "User"); un = msg["from"].get("username")
+            wait_list = load_wait_list(); now = time.time(); upd = []
+            for it in wait_list:
+                if now - it['timestamp'] > 1200:
+                    mid = tg_send(it['user_id'], f"⚠️ Nomor <code>{it['number']}</code> kadaluarsa.")
+                    if mid: asyncio.create_task(delayed_delete(it['user_id'], mid, 30))
+                else: upd.append(it)
+            save_wait_list(upd)
+        except: pass
+        await asyncio.sleep(10)
 
-                    if user_id == ADMIN_ID:
-                        if text == "/add":
-                            waiting_admin_input.add(user_id)
-                            tg_send(user_id, "Kirim range: <code>range > country</code>")
-                            continue
-                        elif text == "/info":
-                            waiting_broadcast_input.add(user_id)
-                            tg_send(user_id, "Kirim pesan siaran atau <code>.batal</code>")
-                            continue
-                        elif text.startswith("/get10akses "):
-                            tid = text.split(" ")[1]
-                            save_akses_get10(tid)
-                            tg_send(user_id, f"✅ Akses /get10 diberikan ke {tid}")
-                            continue
+async def delayed_delete(c_id, m_id, delay):
+    await asyncio.sleep(delay); tg_delete(c_id, m_id)
 
-                    if text == "/get10" and has_get10_access(user_id):
-                        get10_range_input.add(user_id)
-                        pending_message[user_id] = tg_send(user_id, "Kirim range untuk 10 nomor:")
-                        continue
-
-                    if user_id in waiting_broadcast_input:
-                        waiting_broadcast_input.remove(user_id)
-                        if text.lower() != ".batal": await tg_broadcast(text, user_id)
-                        continue
-
-                    if user_id in waiting_admin_input:
-                        waiting_admin_input.remove(user_id)
-                        new_ranges = []
-                        for line in text.strip().split('\n'):
-                            if ' > ' in line:
-                                p = line.split(' > '); r_px = p[0].strip(); c_nm = p[1].strip().upper()
-                                new_ranges.append({"range": r_px, "country": c_nm, "emoji": GLOBAL_COUNTRY_EMOJI.get(c_nm, "🗺️")})
-                        if new_ranges: save_inline_ranges(new_ranges); tg_send(user_id, "✅ Saved.")
-                        continue
-
-                    is_man = re.match(r"^\+?\d{3,15}[Xx*#]+$", text.strip(), re.IGNORECASE)
-                    if user_id in get10_range_input:
-                        get10_range_input.remove(user_id)
-                        if is_man: await process_user_input(browser_context, user_id, text.strip(), 10, un, fn, pending_message.pop(user_id))
-                        continue
-
-                    if is_man and user_id in verified_users:
-                        await process_user_input(browser_context, user_id, text.strip(), 1, un, fn)
-                        continue
-
-                    if text == "/start":
-                        if is_user_in_both_groups(user_id):
-                            verified_users.add(user_id); save_users(user_id)
-                            tg_send(user_id, f"✅ Verifikasi Berhasil!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
-                        else:
-                            kb = {"inline_keyboard": [[{"text": "📌 Grup 1", "url": GROUP_LINK_1}],[{"text": "📌 Grup 2", "url": GROUP_LINK_2}],[{"text": "✅ Verifikasi", "callback_data": "verify"}]]}
-                            tg_send(user_id, "Silakan gabung grup:", kb)
-
-                elif "callback_query" in upd:
-                    cq = upd["callback_query"]; user_id = cq["from"]["id"]; data_cb = cq["data"]
-                    chat_id = cq["message"]["chat"]["id"]; mid = cq["message"]["message_id"]
-                    un = cq["from"].get("username"); fn = cq["from"].get("first_name", "User")
-
-                    if data_cb == "getnum" and user_id in verified_users:
-                        ranges = load_inline_ranges()
-                        kb = generate_inline_keyboard(ranges)
-                        tg_edit(chat_id, mid, "<b>Get Number</b>", kb)
-                    elif data_cb == "manual_range":
-                        manual_range_input.add(user_id); pending_message[user_id] = mid
-                        tg_edit(chat_id, mid, "Kirim Range manual:")
-                    elif data_cb.startswith("select_range:"):
-                        await process_user_input(browser_context, user_id, data_cb.split(":")[1], 1, un, fn, mid)
-                    elif data_cb.startswith("change_num:"):
-                        p = data_cb.split(":"); tg_delete(chat_id, mid)
-                        await process_user_input(browser_context, user_id, p[2], int(p[1]), un, fn)
-                    elif data_cb == "verify":
-                        if is_user_in_both_groups(user_id):
-                            verified_users.add(user_id); save_users(user_id)
-                            tg_edit(chat_id, mid, "✅ Berhasil!", {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}]]})
-        except: await asyncio.sleep(1)
+def initialize_files():
+    for f, d in {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]", USER_FILE: "[]", WAIT_FILE: "[]", AKSES_GET10_FILE: "[]"}.items():
+        if not os.path.exists(f): 
+            with open(f, "w") as file: file.write(d)
 
 async def main():
-    for f, c in {USER_FILE:"[]", CACHE_FILE:"[]", INLINE_RANGE_FILE:"[]", WAIT_FILE:"[]", AKSES_GET10_FILE:"[]"}.items():
-        if not os.path.exists(f): 
-            with open(f, "w") as x: x.write(c)
+    global shared_page
+    initialize_files(); clear_pending_updates()
     
-    # Start sms.py background
-    subprocess.Popen([sys.executable, "sms.py"])
-    
+    # SMS Process startup
+    sms_p = None
+    try: sms_p = subprocess.Popen([sys.executable, "sms.py"])
+    except: pass
+
     async with async_playwright() as p:
-        # headless=False untuk RDP agar bisa lihat loginnya pertama kali
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
+        # --- LOGIN LOGIC ---
+        is_first_run = not os.path.exists(SESSION_DIR)
         
-        # Jalankan login di awal
-        await auto_login_mnit(context)
+        if is_first_run:
+            print("\n" + "="*50)
+            print("PERTAMA KALI JALAN: PERLU LOGIN MANUAL")
+            print("="*50)
+            choice = input("Ketik 'Y' untuk membuka browser login: ").strip().upper()
+            if choice == 'Y':
+                browser = await p.chromium.launch_persistent_context(SESSION_DIR, headless=False)
+                page = await browser.new_page()
+                await page.goto(BASE_WEB_URL)
+                print("\n[!] SILAHKAN LOGIN DI JENDELA BROWSER.")
+                print("[!] SETELAH BERHASIL MASUK DASHBOARD, TUTUP BROWSER TERSEBUT.")
+                
+                # Wait for manual close
+                while len(browser.pages) > 0:
+                    await asyncio.sleep(1)
+                await browser.close()
+                print("\n[OK] Session tersimpan. Memulai bot dalam mode background (Headless)...")
+            else:
+                print("[ABORT] Login dibatalkan.")
+                return
+
+        # --- BACKGROUND BOT (PERMANENT) ---
+        print("[INFO] Menjalankan Bot di Latar Belakang...")
+        browser = await p.chromium.launch_persistent_context(
+            SESSION_DIR, 
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"]
+        )
         
-        print("[INFO] Bot is Running...")
-        await telegram_loop(context)
+        shared_page = await browser.new_page()
+        await shared_page.goto(BASE_WEB_URL, wait_until='domcontentloaded')
+        
+        try:
+            await asyncio.gather(telegram_loop(browser), expiry_monitor_task())
+        finally:
+            if sms_p: sms_p.terminate()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try: asyncio.run(main())
+    except KeyboardInterrupt: print("\n[INFO] Off.")
