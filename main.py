@@ -8,13 +8,22 @@ from dotenv import load_dotenv
 import subprocess
 import sys
 import time
-import math 
+import math
+from datetime import datetime
+
+# ==============================================================================
+# KONFIGURASI DAN VARIABEL GLOBAL
+# ==============================================================================
 
 # --- ASYNCIO LOCK UNTUK ANTRIAN PLAYWRIGHT ---
 playwright_lock = asyncio.Lock()
 # Tambahan Variable Global untuk Tab Standby
 shared_page = None 
 # ----------------------------------------------
+
+# --- KONFIGURASI HARGA DAN SALDO ---
+OTP_PRICE = 0.003500    # Harga per OTP
+MIN_WD_AMOUNT = 1.000000 # Minimal Withdraw
 
 # --- DATA GLOBAL EMOJI NEGARA ---
 GLOBAL_COUNTRY_EMOJI = {
@@ -125,12 +134,12 @@ INLINE_RANGE_FILE = "inline.json"
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
 AKSES_GET10_FILE = "aksesget10.json"
-PROFILE_FILE = "profil.json"
+PROFILE_FILE = "profile.json" # File baru untuk profil
 BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot" 
 GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1" 
 GROUP_LINK_2 = "https://t.me/zura14g" 
 
-# --- VARIABEL GLOBAL ---
+# --- VARIABEL GLOBAL STATE ---
 waiting_broadcast_input = set() 
 broadcast_message = {} 
 
@@ -138,58 +147,16 @@ verified_users = set()
 waiting_admin_input = set()
 manual_range_input = set() 
 get10_range_input = set()
-waiting_set_dana = set()
+waiting_dana_input = set() # Untuk set dana
 pending_message = {}
 sent_numbers = set()
 last_used_range = {}
 
-# --- FUNGSI PROFIL & EKONOMI ---
-def load_profiles():
-    if os.path.exists(PROFILE_FILE):
-        with open(PROFILE_FILE, "r") as f:
-            try:
-                return json.load(f)
-            except json.JSONDecodeError:
-                return {}
-    return {}
 
-def save_profiles(profiles):
-    with open(PROFILE_FILE, "w") as f:
-        json.dump(profiles, f, indent=2)
+# ==============================================================================
+# FUNGSI UTILITAS MANAJEMEN FILE DAN DATA
+# ==============================================================================
 
-def get_user_profile(user_id, full_name="User", username="None"):
-    profiles = load_profiles()
-    uid = str(user_id)
-    if uid not in profiles:
-        profiles[uid] = {
-            "id": user_id,
-            "nama": full_name,
-            "username": f"@{username}" if username != "None" else "None",
-            "dana": "-",
-            "balance": 0.0,
-            "otp_semua": 0,
-            "otp_hari_ini": 0,
-            "last_otp_date": time.strftime("%Y-%m-%d")
-        }
-        save_profiles(profiles)
-    
-    # Reset harian
-    today = time.strftime("%Y-%m-%d")
-    if profiles[uid].get("last_otp_date") != today:
-        profiles[uid]["otp_hari_ini"] = 0
-        profiles[uid]["last_otp_date"] = today
-        save_profiles(profiles)
-        
-    return profiles[uid]
-
-def update_profile(user_id, key, value):
-    profiles = load_profiles()
-    uid = str(user_id)
-    if uid in profiles:
-        profiles[uid][key] = value
-        save_profiles(profiles)
-
-# --- FUNGSI UTILITAS MANAJEMEN FILE ---
 def load_users():
     if os.path.exists(USER_FILE):
         with open(USER_FILE, "r") as f:
@@ -262,16 +229,82 @@ def has_get10_access(user_id):
     akses_list = load_akses_get10()
     return user_id in akses_list
 
+# --- MANAJEMEN PROFIL USER (BARU) ---
+def load_profiles():
+    if os.path.exists(PROFILE_FILE):
+        with open(PROFILE_FILE, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+def save_profiles(data):
+    with open(PROFILE_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+def get_user_profile(user_id, first_name="User"):
+    """Mengambil data profil user, inisialisasi jika belum ada."""
+    profiles = load_profiles()
+    str_id = str(user_id)
+    
+    # Template Default Profil
+    if str_id not in profiles:
+        profiles[str_id] = {
+            "name": first_name,
+            "dana": "Belum Diset",
+            "dana_an": "Belum Diset",
+            "balance": 0.000000,
+            "otp_semua": 0,
+            "otp_hari_ini": 0,
+            "last_active": datetime.now().strftime("%Y-%m-%d")
+        }
+        save_profiles(profiles)
+    else:
+        # Update nama jika berubah
+        if profiles[str_id].get("name") != first_name:
+            profiles[str_id]["name"] = first_name
+            save_profiles(profiles)
+            
+        # Reset OTP Harian jika ganti hari
+        today = datetime.now().strftime("%Y-%m-%d")
+        if profiles[str_id].get("last_active") != today:
+            profiles[str_id]["otp_hari_ini"] = 0
+            profiles[str_id]["last_active"] = today
+            save_profiles(profiles)
+            
+    return profiles[str_id]
+
+def update_user_dana(user_id, dana_number, dana_name):
+    profiles = load_profiles()
+    str_id = str(user_id)
+    if str_id in profiles:
+        profiles[str_id]["dana"] = dana_number
+        profiles[str_id]["dana_an"] = dana_name
+        save_profiles(profiles)
+        return True
+    return False
+
 def generate_inline_keyboard(ranges):
-    """Membuat keyboard inline vertikal 1x10."""
+    """
+    Membuat keyboard inline dari daftar range yang tersedia.
+    Diubah menjadi 1 kolom vertikal (1x10) sesuai permintaan.
+    Format: Emoji Country Service (Contoh: 🇮🇩 INDONESIA WA)
+    """
     keyboard = []
+    # Maksimal 10 tombol per kolom (vertical), jadi 1 tombol per baris
     for item in ranges:
-        service = item.get('service', 'WA')
+        # Default service ke WA jika tidak ada di data
+        service = item.get("service", "WA") 
         text = f"{item['emoji']} {item['country']} {service}"
         callback_data = f"select_range:{item['range']}"
+        
+        # Tambahkan sebagai baris baru (1 tombol per baris)
         keyboard.append([{"text": text, "callback_data": callback_data}])
-    
+
+    # Tambahkan tombol manual range di paling bawah
     keyboard.append([{"text": "Input Manual Range..🖊️", "callback_data": "manual_range"}])
+    
     return {"inline_keyboard": keyboard}
 
 def load_wait_list():
@@ -288,19 +321,16 @@ def save_wait_list(data):
         json.dump(data, f, indent=2)
 
 def add_to_wait_list(number, user_id, username, first_name):
-    """Menambahkan nomor ke wait.json. Pakai @username jika ada, jika tidak pakai Mention Name."""
+    """Menambahkan nomor ke wait.json. Pakai @username jika ada."""
     wait_list = load_wait_list()
     normalized_number = normalize_number(number)
     
     # Logika Penentuan Identitas
     if username and username != "None":
-        # Format @username jika tersedia
         final_identity = f"@{username.replace('@', '')}"
     else:
-        # Format HTML Mention Name jika username tidak ada
         final_identity = f'<a href="tg://user?id={user_id}">{first_name}</a>'
     
-    # Hapus entri lama dengan nomor yang sama agar bersih
     wait_list = [item for item in wait_list if item['number'] != normalized_number]
     
     wait_list.append({
@@ -320,9 +350,12 @@ def normalize_number(number):
 # ----------------------------------------------------
 
 
-# --- FUNGSI UTILITAS TELEGRAM API ---
+# ==============================================================================
+# FUNGSI UTILITAS TELEGRAM API
+# ==============================================================================
+
 def tg_send(chat_id, text, reply_markup=None):
-    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    data = {"chat_id": chat_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = reply_markup
     try:
@@ -334,14 +367,13 @@ def tg_send(chat_id, text, reply_markup=None):
         return None
 
 def tg_edit(chat_id, message_id, text, reply_markup=None):
-    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
+    data = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if reply_markup:
         data["reply_markup"] = reply_markup
     try:
         r = requests.post(f"{API}/editMessageText", json=data).json()
         if not r.get("ok"):
-            if "message is not modified" not in r.get("description", ""):
-                 pass 
+            pass 
     except Exception as e:
         pass 
 
@@ -433,7 +465,9 @@ async def action_task(chat_id, action_interval=4.5):
         tg_send_action(chat_id, action="typing") 
         await asyncio.sleep(action_interval) 
 
-# --- FUNGSI PLAYWRIGHT ASYNC (OPTIMIZED) ---
+# ==============================================================================
+# FUNGSI PLAYWRIGHT ASYNC (INTI SCRAPING)
+# ==============================================================================
 async def get_number_and_country_from_row(row_selector, page):
     """
     Mengambil data (nomor dan negara) dari satu baris tabel 
@@ -531,12 +565,10 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
 
             # Step 1 & 2 di proses tapi visual di skip lewat status map di atas
             current_step = 1 
-            # tg_edit visual di skip
             
             await asyncio.sleep(0.5) 
             current_step = 2 
-            # tg_edit visual di skip
-
+            
             BUTTON_SELECTOR = "button:has-text('Get Number')" 
             await shared_page.wait_for_selector(BUTTON_SELECTOR, state='visible', timeout=10000) 
             
@@ -647,12 +679,14 @@ async def process_user_input(browser, user_id, prefix, click_count, username_tg,
             if action_loop_task: action_loop_task.cancel()
 
 
-# --- LOOP UTAMA TELEGRAM ---
+# ==============================================================================
+# LOOP UTAMA TELEGRAM
+# ==============================================================================
 async def telegram_loop(browser):
     global verified_users 
     global waiting_broadcast_input
     global broadcast_message
-    global waiting_set_dana
+    global waiting_dana_input 
     
     verified_users = load_users()
     offset = 0
@@ -666,44 +700,29 @@ async def telegram_loop(browser):
                 chat_id = msg["chat"]["id"]
                 user_id = msg["from"]["id"]
                 first_name = msg["from"].get("first_name", "User")
-                last_name = msg["from"].get("last_name", "")
-                full_name = f"{first_name} {last_name}".strip()
-                username_tg = msg["from"].get("username", "None")
-                mention = f"<a href='tg://user?id={user_id}'>{full_name}</a>"
+                username_tg = msg["from"].get("username") # Simpan username
+                
+                if username_tg:
+                    mention = f"@{username_tg}"
+                else:
+                    mention = f"<a href='tg://user?id={user_id}'>{first_name}</a>"
+                
                 text = msg.get("text", "")
 
-                # Load profile harian
-                prof = get_user_profile(user_id, full_name, username_tg)
-
+                # --- FITUR ADMIN ---
                 if user_id == ADMIN_ID:
-                    # FITUR ADMIN: /list
-                    if text == "/list":
-                        all_profiles = load_profiles()
-                        list_msg = "<b>📋 List Dashboard User</b>\n\n"
-                        for uid, p in all_profiles.items():
-                            list_msg += (
-                                f"Name: {p['nama']}\n"
-                                f"dana: {p['dana']}\n"
-                                f"balace: ${p['balance']:.6f}\n"
-                                f"jumlah otp: {p['otp_semua']}\n\n"
-                            )
-                        tg_send(user_id, list_msg)
-                        continue
-
                     if text.startswith("/add"):
                         waiting_admin_input.add(user_id)
-                        prompt_msg_text = "Silahkan kirim daftar range dalam format:\n\n<code>range > country > service</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE > WA</code>"
+                        prompt_msg_text = "Silahkan kirim daftar range dalam format:\n\n<code>range > country > service</code>\nAtau default service WA:\n<code>range > country</code>\n\nContoh:\n<code>23273XXX > SIERRA LEONE > WA</code>"
                         msg_id = tg_send(user_id, prompt_msg_text)
                         if msg_id: pending_message[user_id] = msg_id
                         continue
-
-                    if text == "/info":
+                    elif text == "/info":
                         waiting_broadcast_input.add(user_id)
                         prompt_msg_text = "<b>Pesan Siaran</b>\n\nKirim pesan yang ingin disiarkan. Ketik <code>.batal</code> untuk batal."
                         msg_id = tg_send(user_id, prompt_msg_text)
                         if msg_id: broadcast_message[user_id] = msg_id 
                         continue
-
                     elif text.startswith("/get10akses "):
                         try:
                             target_id = text.split(" ")[1]
@@ -712,17 +731,30 @@ async def telegram_loop(browser):
                         except:
                             tg_send(user_id, "❌ Gagal. Gunakan format: <code>/get10akses ID_USER</code>")
                         continue
-
-                # --- INPUT SET DANA ---
-                if user_id in waiting_set_dana:
-                    waiting_set_dana.remove(user_id)
-                    if "dana:" in text.lower() and "a/n:" in text.lower():
-                        update_profile(user_id, "dana", text.strip())
-                        tg_send(user_id, "✅ Data Dana Berhasil disimpan!")
-                    else:
-                        tg_send(user_id, "❌ pastikan format benar coba lagi\ndana: \nA/N:")
-                        waiting_set_dana.add(user_id)
-                    continue
+                    # --- FITUR ADMIN: /list USER ---
+                    elif text == "/list":
+                        profiles = load_profiles()
+                        if not profiles:
+                            tg_send(user_id, "❌ Belum ada data user.")
+                        else:
+                            msg_list = "<b>📋 LIST SEMUA USER</b>\n\n"
+                            chunk = ""
+                            count = 0
+                            for uid, pdata in profiles.items():
+                                chunk += (
+                                    f"👤 Name: {pdata.get('name', 'Unknown')}\n"
+                                    f"🧾 Dana: {pdata.get('dana', '-')}\n"
+                                    f"💰 Balance: ${pdata.get('balance', 0.0):.6f}\n"
+                                    f"📊 Total OTP: {pdata.get('otp_semua', 0)}\n\n"
+                                )
+                                count += 1
+                                if count % 10 == 0:
+                                    tg_send(user_id, chunk)
+                                    chunk = ""
+                                    await asyncio.sleep(0.5)
+                            if chunk:
+                                tg_send(user_id, chunk)
+                        continue
 
                 # --- FITUR /get10 (ADMIN & USER TERAKSES) ---
                 if text == "/get10":
@@ -742,13 +774,23 @@ async def telegram_loop(browser):
                             parts = line.split(' > ')
                             range_prefix = parts[0].strip()
                             country_name = parts[1].strip().upper() 
-                            service_name = parts[2].strip() if len(parts) > 2 else "WA"
+                            # Cek Service
+                            service_name = parts[2].strip().upper() if len(parts) > 2 else "WA"
+                            
                             emoji = GLOBAL_COUNTRY_EMOJI.get(country_name, "🗺️") 
-                            new_ranges.append({"range": range_prefix, "country": country_name, "emoji": emoji, "service": service_name})
+                            new_ranges.append({
+                                "range": range_prefix, 
+                                "country": country_name, 
+                                "emoji": emoji,
+                                "service": service_name
+                            })
                     prompt_msg_id = pending_message.pop(user_id, None)
                     if new_ranges:
-                        save_inline_ranges(new_ranges)
-                        tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menyimpan {len(new_ranges)} range.")
+                        # Append ke range yang sudah ada, jangan timpa semua
+                        current_ranges = load_inline_ranges()
+                        current_ranges.extend(new_ranges)
+                        save_inline_ranges(current_ranges)
+                        tg_edit(user_id, prompt_msg_id, f"✅ Berhasil menyimpan {len(new_ranges)} range baru.")
                     else:
                         tg_edit(user_id, prompt_msg_id, "❌ Format tidak valid.")
                     continue
@@ -761,6 +803,25 @@ async def telegram_loop(browser):
                         continue
                     tg_edit(chat_id, prompt_msg_id, "✅ Memulai siaran...")
                     await tg_broadcast(text, user_id)
+                    continue
+                
+                # --- PROSES INPUT SET DANA ---
+                if user_id in waiting_dana_input:
+                    lines = text.strip().split('\n')
+                    # Validasi sederhana: minimal 2 baris (nomor dan nama)
+                    if len(lines) >= 2:
+                        dana_num = lines[0].strip()
+                        dana_name = " ".join(lines[1:]).strip() # Menggabungkan sisa baris jika ada spasi di nama
+                        
+                        # Validasi format nomor (angka)
+                        if dana_num.isdigit() or (dana_num.startswith('+') and dana_num[1:].isdigit()):
+                            waiting_dana_input.remove(user_id)
+                            update_user_dana(user_id, dana_num, dana_name)
+                            tg_send(user_id, f"✅ <b>Dana Berhasil Disimpan!</b>\n\nNo: {dana_num}\nA/N: {dana_name}")
+                        else:
+                            tg_send(user_id, "❌ Format salah. Pastikan baris pertama adalah NOMOR DANA.")
+                    else:
+                        tg_send(user_id, "❌ Format salah. Mohon kirim:\n\n<code>08123456789\nNama Pemilik</code>\n\nPastikan format benar coba lagi.")
                     continue
 
                 # --- PROSES INPUT UNTUK /get10 ---
@@ -789,33 +850,47 @@ async def telegram_loop(browser):
                     else:
                         tg_send(chat_id, "❌ Format Range tidak valid.")
                     continue
+                
+                # --- COMMAND /setdana manual ---
+                if text.startswith("/setdana"):
+                    waiting_dana_input.add(user_id)
+                    tg_send(user_id, "Silahkan kirim dana dalam format:\n\n<code>08123456789\nNama Pemilik</code>")
+                    continue
 
                 if text == "/start":
                     if is_user_in_both_groups(user_id):
                         verified_users.add(user_id)
-                        save_users(user_id)
+                        save_users(user_id) 
                         
-                        prof_data = get_user_profile(user_id, full_name, username_tg)
-                        username_disp = f"@{username_tg}" if username_tg != "None" else "None"
+                        # --- INITIALIZE & GET PROFILE ---
+                        prof_data = get_user_profile(user_id, first_name)
                         
-                        welcome_text = (
-                            f"✅ Verifikasi Berhasil, {mention}/{username_disp}\n\n"
-                            f"Profil anda :\n"
-                            f"🔖Nama:{full_name}\n"
-                            f"🧾Dana: {prof_data['dana']}\n"
-                            f"📊Total of all OTPs: {prof_data['otp_semua']}\n"
-                            f"📊daily OTP count: {prof_data['otp_hari_ini']}\n"
-                            f"💰Balance: ${prof_data['balance']:.6f}\n"
+                        # Format Pesan Profil
+                        full_name = first_name
+                        if username_tg:
+                            full_name = f"{first_name} (@{username_tg})"
+
+                        msg_profile = (
+                            f"✅ <b>Verifikasi Berhasil, {mention}</b>\n\n"
+                            f"👤 <b>Profil Anda :</b>\n"
+                            f"🔖 <b>Nama</b> : {full_name}\n"
+                            f"🧾 <b>Dana</b> : {prof_data['dana']}\n"
+                            f"👤 <b>A/N</b> : {prof_data['dana_an']}\n"
+                            f"📊 <b>Total of all OTPs</b> : {prof_data['otp_semua']}\n"
+                            f"📊 <b>daily OTP count</b> : {prof_data['otp_hari_ini']}\n"
+                            f"💰 <b>Balance</b> : ${prof_data['balance']:.6f}\n"
                         )
-                        
-                        kb = {"inline_keyboard": [
-                            [{"text": "📲 Get Number", "callback_data": "getnum"}, {"text": "👨‍💼 Admin", "url": "https://t.me/zura14g"}],
-                            [{"text": "💸 withdraw money", "callback_data": "withdraw_menu"}]
-                        ]}
-                        tg_send(user_id, welcome_text, kb)
+
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 Get Number", "callback_data": "getnum"}, {"text": "👨‍💼 Admin", "url": "https://t.me/"}],
+                                [{"text": "💸 Withdraw Money", "callback_data": "withdraw_menu"}]
+                            ]
+                        }
+                        tg_send(user_id, msg_profile, kb)
                     else:
                         kb = {"inline_keyboard": [[{"text": "📌 Gabung Grup 1", "url": GROUP_LINK_1}], [{"text": "📌 Gabung Grup 2", "url": GROUP_LINK_2}], [{"text": "✅ Verifikasi Ulang", "callback_data": "verify"}],]}
-                        tg_send(user_id, f"Halo {full_name} 👋\nHarap gabung kedua grup di bawah untuk verifikasi:", kb)
+                        tg_send(user_id, f"Halo {mention} 👋\nHarap gabung kedua grup di bawah untuk verifikasi:", kb)
                     continue
 
             if "callback_query" in upd:
@@ -825,77 +900,12 @@ async def telegram_loop(browser):
                 chat_id = cq["message"]["chat"]["id"]
                 menu_msg_id = cq["message"]["message_id"]
                 first_name_tg = cq["from"].get("first_name", "User")
-                last_name_tg = cq["from"].get("last_name", "")
-                full_name_tg = f"{first_name_tg} {last_name_tg}".strip()
-                username_tg = cq["from"].get("username", "None")
-
-                if data_cb == "withdraw_menu":
-                    prof = get_user_profile(user_id)
-                    wd_text = (
-                        f"Silahkan Pilih Jumlah Windraw anda\n"
-                        f"Dana: {prof['dana']}\n"
-                        f"A/N : {prof['nama']}\n"
-                    )
-                    kb_wd = {"inline_keyboard": [
-                        [{"text": "$1.000000", "callback_data": "do_wd:1.0"}, {"text": "$2.000000", "callback_data": "do_wd:2.0"}],
-                        [{"text": "$3.000000", "callback_data": "do_wd:3.0"}, {"text": "$5.000000", "callback_data": "do_wd:5.0"}],
-                        [{"text": "setting dana / ganti", "callback_data": "set_dana_btn"}]
-                    ]}
-                    tg_edit(chat_id, menu_msg_id, wd_text, kb_wd)
-                    continue
-
-                if data_cb == "set_dana_btn":
-                    waiting_set_dana.add(user_id)
-                    tg_send(chat_id, "silahkan kirim dana dalam format \n\ndana: \nA/N: ")
-                    continue
-
-                if data_cb.startswith("do_wd:"):
-                    amount = float(data_cb.split(":")[1])
-                    prof = get_user_profile(user_id)
-                    if prof['balance'] < amount:
-                        tg_send(chat_id, "❌ Saldo tidak mencukupi untuk Windraw.")
-                    elif amount < 1.0:
-                        tg_send(chat_id, "❌ Minimal Windraw adalah $1.000000.")
-                    else:
-                        # Kurangi saldo sementara
-                        new_bal = prof['balance'] - amount
-                        update_profile(user_id, "balance", new_bal)
-                        
-                        # Kirim ke admin
-                        admin_msg = (
-                            f"User meminta Windraw\n"
-                            f"user:{mention if 'mention' in locals() else full_name_tg}\n"
-                            f"Saldo: ${amount:.6f}\n"
-                            f"Detail: {prof['dana']}"
-                        )
-                        kb_admin = {"inline_keyboard": [
-                            [{"text": "approved", "callback_data": f"wd_aprv:{user_id}:{amount}"}, {"text": "cancel", "callback_data": f"wd_cncl:{user_id}:{amount}"}]
-                        ]}
-                        tg_send(ADMIN_ID, admin_msg, kb_admin)
-                        tg_send(chat_id, "⏳ Permintaan Windraw sedang diproses admin...")
-                    continue
-
-                if data_cb.startswith("wd_aprv:"):
-                    _, target_uid, amt = data_cb.split(":")
-                    p = get_user_profile(target_uid)
-                    tg_send(int(target_uid), (
-                        f"Selamat Windraw anda sukses cek dana anda sekarang:\n"
-                        f"Penarikan : ${float(amt):.6f}\n"
-                        f"saldo saat ini: ${p['balance']:.6f}"
-                    ))
-                    tg_edit(chat_id, menu_msg_id, "✅ WD Approved.")
-                    continue
-
-                if data_cb.startswith("wd_cncl:"):
-                    _, target_uid, amt = data_cb.split(":")
-                    p = get_user_profile(target_uid)
-                    update_profile(target_uid, "balance", p['balance'] + float(amt))
-                    tg_send(int(target_uid), (
-                        f"Admin membatalkan Windraw\n"
-                        f"silahkan chat Admin atau melakukan ulang Windraw."
-                    ))
-                    tg_edit(chat_id, menu_msg_id, "❌ WD Cancelled.")
-                    continue
+                username_tg = cq["from"].get("username")
+                
+                if username_tg:
+                    mention = f"@{username_tg}"
+                else:
+                    mention = f"<a href='tg://user?id={user_id}'>{first_name_tg}</a>"
 
                 if data_cb == "verify":
                     if not is_user_in_both_groups(user_id):
@@ -904,8 +914,27 @@ async def telegram_loop(browser):
                     else:
                         verified_users.add(user_id)
                         save_users(user_id) 
-                        kb = {"inline_keyboard": [[{"text": "📲 Get Number", "callback_data": "getnum"}],[{"text": "👨‍💼 Admin", "url": "https://t.me/zura14g"}],]}
-                        tg_edit(chat_id, menu_msg_id, "✅ Verifikasi Berhasil!", kb)
+                        prof_data = get_user_profile(user_id, first_name_tg)
+                        full_name = first_name_tg
+                        if username_tg: full_name = f"{first_name_tg} (@{username_tg})"
+                        
+                        msg_profile = (
+                            f"✅ <b>Verifikasi Berhasil, {mention}</b>\n\n"
+                            f"👤 <b>Profil Anda :</b>\n"
+                            f"🔖 <b>Nama</b> : {full_name}\n"
+                            f"🧾 <b>Dana</b> : {prof_data['dana']}\n"
+                            f"👤 <b>A/N</b> : {prof_data['dana_an']}\n"
+                            f"📊 <b>Total of all OTPs</b> : {prof_data['otp_semua']}\n"
+                            f"📊 <b>daily OTP count</b> : {prof_data['otp_hari_ini']}\n"
+                            f"💰 <b>Balance</b> : ${prof_data['balance']:.6f}\n"
+                        )
+                        kb = {
+                            "inline_keyboard": [
+                                [{"text": "📲 Get Number", "callback_data": "getnum"}, {"text": "👨‍💼 Admin", "url": "https://t.me/"}],
+                                [{"text": "💸 Withdraw Money", "callback_data": "withdraw_menu"}]
+                            ]
+                        }
+                        tg_edit(chat_id, menu_msg_id, msg_profile, kb)
                     continue
                 
                 if data_cb == "getnum":
@@ -928,7 +957,7 @@ async def telegram_loop(browser):
                     if user_id not in verified_users: continue
                     prefix = data_cb.split(":")[1]
                     tg_edit(chat_id, menu_msg_id, get_progress_message(0, 0, prefix, 1)) 
-                    await process_user_input(browser, user_id, prefix, 1, username_tg, full_name_tg, menu_msg_id) 
+                    await process_user_input(browser, user_id, prefix, 1, username_tg, first_name_tg, menu_msg_id) 
                     continue
 
                 if data_cb.startswith("change_num:"):
@@ -937,9 +966,111 @@ async def telegram_loop(browser):
                     num_to_fetch = int(parts[1]) 
                     prefix = parts[2]
                     tg_delete(chat_id, menu_msg_id)
-                    await process_user_input(browser, user_id, prefix, num_to_fetch, username_tg, full_name_tg) 
+                    await process_user_input(browser, user_id, prefix, num_to_fetch, username_tg, first_name_tg) 
                     continue
                 
+                # --- FITUR WITHDRAW MONEY ---
+                if data_cb == "withdraw_menu":
+                    prof = get_user_profile(user_id, first_name_tg)
+                    msg_wd = (
+                        f"<b>💸 Withdraw Money</b>\n\n"
+                        f"Silahkan Pilih Jumlah Withdraw anda\n"
+                        f"🧾 Dana: <code>{prof['dana']}</code>\n"
+                        f"👤 A/N : <code>{prof['dana_an']}</code>\n"
+                        f"💰 Balance: ${prof['balance']:.6f}\n\n"
+                        f"<i>Minimal Withdraw: ${MIN_WD_AMOUNT:.6f}</i>"
+                    )
+                    kb_wd = {
+                        "inline_keyboard": [
+                            [{"text": "$1.000000", "callback_data": "wd_req:1.0"}, {"text": "$2.000000", "callback_data": "wd_req:2.0"}],
+                            [{"text": "$3.000000", "callback_data": "wd_req:3.0"}, {"text": "$5.000000", "callback_data": "wd_req:5.0"}],
+                            [{"text": "⚙️ Setting Dana / Ganti", "callback_data": "set_dana_cb"}],
+                            [{"text": "🔙 Kembali", "callback_data": "verify"}] # Kembali ke profil
+                        ]
+                    }
+                    tg_edit(chat_id, menu_msg_id, msg_wd, kb_wd)
+                    continue
+
+                if data_cb == "set_dana_cb":
+                    waiting_dana_input.add(user_id)
+                    tg_edit(chat_id, menu_msg_id, "Silahkan kirim dana dalam format:\n\n<code>08123456789\nNama Pemilik</code>")
+                    continue
+
+                if data_cb.startswith("wd_req:"):
+                    amount = float(data_cb.split(":")[1])
+                    profiles = load_profiles()
+                    str_id = str(user_id)
+                    prof = profiles.get(str_id)
+                    
+                    # Validasi Dana belum diset
+                    if not prof or prof['dana'] == "Belum Diset":
+                         tg_send(chat_id, "❌ Harap Setting Dana terlebih dahulu!")
+                         continue
+
+                    # Validasi Saldo
+                    if prof['balance'] < amount:
+                        tg_send(chat_id, f"❌ Saldo tidak cukup! Balance anda: ${prof['balance']:.6f}")
+                        continue
+                    
+                    # POTONG SALDO DULUAN (Anti Spam)
+                    prof['balance'] -= amount
+                    save_profiles(profiles)
+                    
+                    # NOTIF ADMIN
+                    wd_msg_admin = (
+                        f"<b>🔔 User meminta Withdraw</b>\n\n"
+                        f"👤 User: {mention}\n"
+                        f"🆔 ID: <code>{user_id}</code>\n"
+                        f"💵 Jumlah: <b>${amount:.6f}</b>\n"
+                        f"🧾 Dana: <code>{prof['dana']}</code>\n"
+                        f"👤 A/N: <code>{prof['dana_an']}</code>\n"
+                    )
+                    kb_admin = {
+                        "inline_keyboard": [
+                            [
+                                {"text": "✅ Approve", "callback_data": f"wd_act:apr:{user_id}:{amount}"},
+                                {"text": "❌ Cancel", "callback_data": f"wd_act:cncl:{user_id}:{amount}"}
+                            ]
+                        ]
+                    }
+                    tg_send(ADMIN_ID, wd_msg_admin, kb_admin)
+                    
+                    tg_edit(chat_id, menu_msg_id, "✅ <b>Permintaan Withdraw Terkirim!</b>\nMenunggu persetujuan Admin..")
+                    continue
+                
+                # --- FITUR APPROVE/CANCEL ADMIN ---
+                if data_cb.startswith("wd_act:"):
+                    if user_id != ADMIN_ID: return # Security Check
+                    parts = data_cb.split(":")
+                    action = parts[1]
+                    target_id = parts[2]
+                    amount = float(parts[3])
+                    
+                    if action == "apr":
+                        # Sukses, saldo sudah dipotong
+                        tg_edit(chat_id, menu_msg_id, f"✅ Withdraw User {target_id} sebesar ${amount} DISETUJUI.")
+                        
+                        # Notif User
+                        prof = get_user_profile(target_id)
+                        msg_succ = (
+                            f"<b>✅ Selamat Withdraw Anda Sukses!</b>\n\n"
+                            f"💵 Penarikan : ${amount:.6f}\n"
+                            f"💰 Saldo saat ini: ${prof['balance']:.6f}"
+                        )
+                        tg_send(target_id, msg_succ)
+                        
+                    elif action == "cncl":
+                        # Refund Saldo
+                        profiles = load_profiles()
+                        if str(target_id) in profiles:
+                            profiles[str(target_id)]["balance"] += amount
+                            save_profiles(profiles)
+                        
+                        tg_edit(chat_id, menu_msg_id, f"❌ Withdraw User {target_id} sebesar ${amount} DIBATALKAN.")
+                        
+                        tg_send(target_id, "❌ Admin membatalkan Withdraw.\nSilahkan chat Admin atau melakukan ulang Withdraw.")
+                    continue
+
         await asyncio.sleep(0.05) 
 
 # --- TASK MONITORING KADALUARSA ---
@@ -964,7 +1095,15 @@ async def delayed_delete(chat_id, message_id, delay):
     tg_delete(chat_id, message_id)
 
 def initialize_files():
-    files = {CACHE_FILE: "[]", INLINE_RANGE_FILE: "[]", SMC_FILE: "[]", USER_FILE: "[]", WAIT_FILE: "[]", AKSES_GET10_FILE: "[]", PROFILE_FILE: "{}"}
+    files = {
+        CACHE_FILE: "[]", 
+        INLINE_RANGE_FILE: "[]", 
+        SMC_FILE: "[]", 
+        USER_FILE: "[]", 
+        WAIT_FILE: "[]", 
+        AKSES_GET10_FILE: "[]",
+        PROFILE_FILE: "{}" # Initialize profile as object
+    }
     for file, default_content in files.items():
         if not os.path.exists(file):
             with open(file, "w") as f: f.write(default_content)
@@ -976,6 +1115,7 @@ async def main():
     clear_pending_updates()
     sms_process = None
     try:
+        # Jalankan sms.py sebagai subprocess
         sms_process = subprocess.Popen([sys.executable, "sms.py"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True)
     except: pass
 
