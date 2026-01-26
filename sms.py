@@ -3,6 +3,7 @@ import os
 import time
 import requests
 from dotenv import load_dotenv
+from datetime import datetime
 
 # Muat variabel lingkungan
 load_dotenv()
@@ -10,12 +11,17 @@ load_dotenv()
 # ================= Konfigurasi Global =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# Waktu tunggu standar sebelum dapet OTP (default 30 menit)
 WAIT_TIMEOUT_SECONDS = int(os.getenv("WAIT_TIMEOUT_SECONDS", 1800)) 
+# Waktu tunggu tambahan SETELAH dapet OTP (5 menit)
 EXTENDED_WAIT_SECONDS = 300 
+
+# Harga Reward per OTP
+OTP_REWARD_PRICE = 0.003500
 
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
-PROFILE_FILE = "profil.json"
+PROFILE_FILE = "profile.json" # Akses ke file profil
 DONATE_LINK = "https://zurastore.my.id/donate"
 # ======================================================
 
@@ -59,26 +65,55 @@ def load_json_file(filename):
             try:
                 return json.load(f)
             except:
-                return [] if "profil" not in filename else {}
-    return [] if "profil" not in filename else {}
+                if filename == PROFILE_FILE: return {} # Profile dict
+                return [] # Default list
+    if filename == PROFILE_FILE: return {}
+    return []
 
 def save_json_file(filename, data):
     with open(filename, "w") as f:
         json.dump(data, f, indent=2)
 
-def add_economy_bonus(user_id):
-    """Menambah saldo dan counter OTP user."""
+# ================= Manajemen Profil (Update Saldo) =================
+
+def update_profile_otp(user_id):
+    """
+    Mengupdate saldo dan counter OTP user di profile.json
+    Mengembalikan: (old_balance, new_balance)
+    """
     profiles = load_json_file(PROFILE_FILE)
-    uid = str(user_id)
-    if uid in profiles:
-        old_balance = profiles[uid].get("balance", 0.0)
-        new_balance = old_balance + 0.003500
-        profiles[uid]["balance"] = new_balance
-        profiles[uid]["otp_semua"] = profiles[uid].get("otp_semua", 0) + 1
-        profiles[uid]["otp_hari_ini"] = profiles[uid].get("otp_hari_ini", 0) + 1
-        save_json_file(PROFILE_FILE, profiles)
-        return old_balance, new_balance
-    return 0.0, 0.0
+    str_id = str(user_id)
+    
+    # Init jika belum ada (Safe guard)
+    if str_id not in profiles:
+        profiles[str_id] = {
+            "name": "User", "dana": "Belum Diset", "dana_an": "Belum Diset",
+            "balance": 0.000000, "otp_semua": 0, "otp_hari_ini": 0,
+            "last_active": datetime.now().strftime("%Y-%m-%d")
+        }
+
+    p = profiles[str_id]
+    
+    # Cek reset harian
+    today = datetime.now().strftime("%Y-%m-%d")
+    if p.get("last_active") != today:
+        p["otp_hari_ini"] = 0
+        p["last_active"] = today
+        
+    old_balance = p.get("balance", 0.0)
+    
+    # Update Stats
+    p["otp_semua"] = p.get("otp_semua", 0) + 1
+    p["otp_hari_ini"] = p.get("otp_hari_ini", 0) + 1
+    
+    # Update Balance
+    p["balance"] = old_balance + OTP_REWARD_PRICE
+    
+    new_balance = p["balance"]
+    
+    save_json_file(PROFILE_FILE, profiles)
+    
+    return old_balance, new_balance
 
 # ================= Fungsi Utama Monitoring =================
 
@@ -126,22 +161,22 @@ def check_and_forward():
             if str(sms_entry.get("Number")) == str(wait_number):
                 otp = sms_entry.get("OTP", "N/A")
                 
-                # Proses Ekonomi
-                old_bal, new_bal = add_economy_bonus(wait_user_id)
+                # --- UPDATE SALDO & PROFILE ---
+                old_bal, new_bal = update_profile_otp(wait_user_id)
                 
                 response_text = (
                     "🗯️ <b>New Message Detected</b>\n\n"
                     f"👤 <b>User:</b> {user_identity}\n"
                     f"☎️ <b>Nomor:</b> <code>{wait_number}</code>\n"
                     f"🔑 <b>OTP:</b> <code>{otp}</code>\n\n"
-                    f"💰added: ${old_bal:.6f} > ${new_bal:.6f}\n\n"
+                    f"💰 <b>added:</b> ${old_bal:.6f} > ${new_bal:.6f}\n\n"
                     "⚡ <b>Tap the Button To Copy OTP</b> ⚡"
                 )
                 
                 keyboard = create_otp_keyboard(otp)
                 tg_send(wait_user_id, response_text, reply_markup=keyboard)
 
-                print(f"[SUCCESS] OTP {otp} terkirim. Menghapus data dari smc.json.")
+                print(f"[SUCCESS] OTP {otp} terkirim ke {user_identity}. Saldo Updated.")
                 
                 wait_item['otp_received_time'] = time.time()
                 sms_was_changed = True
@@ -149,7 +184,7 @@ def check_and_forward():
             else:
                 remaining_sms.append(sms_entry)
         
-        # Update sms_data untuk iterasi user berikutnya
+        # Update sms_data untuk iterasi user berikutnya agar SMS yang sudah diproses hilang
         sms_data = remaining_sms
         new_wait_list.append(wait_item)
 
@@ -165,6 +200,7 @@ def sms_loop():
     print(f"[CONFIG] Startup: smc.json dibersihkan")
     print(f"[CONFIG] Timeout: {WAIT_TIMEOUT_SECONDS/60}m")
     print(f"[CONFIG] Extended: {EXTENDED_WAIT_SECONDS/60}m")
+    print(f"[CONFIG] Reward: ${OTP_REWARD_PRICE} / OTP")
     print("========================================")
     
     while True:
