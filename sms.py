@@ -142,6 +142,10 @@ def check_and_forward():
             if current_time - otp_received_time > EXTENDED_WAIT_SECONDS:
                 print(f"[CLEANUP] Sesi selesai untuk {wait_number}")
                 continue 
+            else:
+                # User ini sudah dapat OTP, jangan scan SMS lagi untuk dia di siklus ini
+                new_wait_list.append(wait_item)
+                continue
         
         # 2. Logic Expired
         elif current_time - start_timestamp > WAIT_TIMEOUT_SECONDS:
@@ -158,7 +162,8 @@ def check_and_forward():
         found_for_this_user = False
         
         for sms_entry in sms_data:
-            if str(sms_entry.get("Number")) == str(wait_number):
+            # Gunakan str() untuk memastikan perbandingan akurat
+            if not found_for_this_user and str(sms_entry.get("Number")) == str(wait_number):
                 otp = sms_entry.get("OTP", "N/A")
                 
                 # --- UPDATE SALDO & PROFILE ---
@@ -181,14 +186,15 @@ def check_and_forward():
                 wait_item['otp_received_time'] = time.time()
                 sms_was_changed = True
                 found_for_this_user = True
+                # SMS yang sudah diproses TIDAK dimasukkan ke remaining_sms (dihapus)
             else:
                 remaining_sms.append(sms_entry)
         
-        # Update sms_data untuk iterasi user berikutnya agar SMS yang sudah diproses hilang
+        # Sinkronkan data sms_data agar SMS yang sudah diambil hilang dari list untuk iterasi user berikutnya
         sms_data = remaining_sms
         new_wait_list.append(wait_item)
 
-    # Simpan perubahan permanen jika ada SMS yang diproses
+    # Simpan perubahan ke file
     if sms_was_changed:
         save_json_file(SMC_FILE, sms_data)
     
