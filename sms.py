@@ -10,13 +10,12 @@ load_dotenv()
 # ================= Konfigurasi Global =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-# Waktu tunggu standar sebelum dapet OTP (default 30 menit)
 WAIT_TIMEOUT_SECONDS = int(os.getenv("WAIT_TIMEOUT_SECONDS", 1800)) 
-# Waktu tunggu tambahan SETELAH dapet OTP (5 menit)
 EXTENDED_WAIT_SECONDS = 300 
 
 SMC_FILE = "smc.json"
 WAIT_FILE = "wait.json"
+PROFILE_FILE = "profil.json"
 DONATE_LINK = "https://zurastore.my.id/donate"
 # ======================================================
 
@@ -60,12 +59,26 @@ def load_json_file(filename):
             try:
                 return json.load(f)
             except:
-                return []
-    return []
+                return [] if "profil" not in filename else {}
+    return [] if "profil" not in filename else {}
 
 def save_json_file(filename, data):
     with open(filename, "w") as f:
         json.dump(data, f, indent=2)
+
+def add_economy_bonus(user_id):
+    """Menambah saldo dan counter OTP user."""
+    profiles = load_json_file(PROFILE_FILE)
+    uid = str(user_id)
+    if uid in profiles:
+        old_balance = profiles[uid].get("balance", 0.0)
+        new_balance = old_balance + 0.003500
+        profiles[uid]["balance"] = new_balance
+        profiles[uid]["otp_semua"] = profiles[uid].get("otp_semua", 0) + 1
+        profiles[uid]["otp_hari_ini"] = profiles[uid].get("otp_hari_ini", 0) + 1
+        save_json_file(PROFILE_FILE, profiles)
+        return old_balance, new_balance
+    return 0.0, 0.0
 
 # ================= Fungsi Utama Monitoring =================
 
@@ -113,11 +126,15 @@ def check_and_forward():
             if str(sms_entry.get("Number")) == str(wait_number):
                 otp = sms_entry.get("OTP", "N/A")
                 
+                # Proses Ekonomi
+                old_bal, new_bal = add_economy_bonus(wait_user_id)
+                
                 response_text = (
                     "🗯️ <b>New Message Detected</b>\n\n"
                     f"👤 <b>User:</b> {user_identity}\n"
                     f"☎️ <b>Nomor:</b> <code>{wait_number}</code>\n"
                     f"🔑 <b>OTP:</b> <code>{otp}</code>\n\n"
+                    f"💰added: ${old_bal:.6f} > ${new_bal:.6f}\n\n"
                     "⚡ <b>Tap the Button To Copy OTP</b> ⚡"
                 )
                 
@@ -132,7 +149,7 @@ def check_and_forward():
             else:
                 remaining_sms.append(sms_entry)
         
-        # Update sms_data untuk iterasi user berikutnya agar SMS yang sudah diproses hilang
+        # Update sms_data untuk iterasi user berikutnya
         sms_data = remaining_sms
         new_wait_list.append(wait_item)
 
