@@ -2,6 +2,7 @@ import json
 import os
 import time
 import requests
+import html
 from dotenv import load_dotenv
 from datetime import datetime
 
@@ -52,7 +53,10 @@ def tg_send(chat_id, text, reply_markup=None):
         
     try:
         response = requests.post(f"{API}/sendMessage", json=data, timeout=15)
-        return response.json()
+        res_json = response.json()
+        if not res_json.get("ok"):
+            print(f"[TG ERROR] {res_json.get('description')}")
+        return res_json
     except Exception as e:
         print(f"[ERROR REQUEST] {e}")
         return None
@@ -143,7 +147,6 @@ def check_and_forward():
                 print(f"[CLEANUP] Sesi selesai untuk {wait_number}")
                 continue 
             else:
-                # User ini sudah dapat OTP, jangan scan SMS lagi untuk dia di siklus ini
                 new_wait_list.append(wait_item)
                 continue
         
@@ -162,39 +165,52 @@ def check_and_forward():
         found_for_this_user = False
         
         for sms_entry in sms_data:
-            # Gunakan str() untuk memastikan perbandingan akurat
-            if not found_for_this_user and str(sms_entry.get("Number")) == str(wait_number):
-                otp = sms_entry.get("OTP", "N/A")
+            # Menggunakan mapping field dari script bot pertama
+            entry_num = str(sms_entry.get("number") or sms_entry.get("Number"))
+            
+            if not found_for_this_user and entry_num == str(wait_number):
+                otp = sms_entry.get("otp") or sms_entry.get("OTP", "N/A")
+                service = sms_entry.get("service", "Unknown")
+                raw_msg = sms_entry.get("full_message") or sms_entry.get("FullMessage", "No message content")
                 
-                # --- UPDATE SALDO & PROFILE ---
-                old_bal, new_bal = update_profile_otp(wait_user_id)
+                # Escape HTML agar karakter <#> tidak dianggap tag yang merusak oleh Telegram
+                safe_msg = html.escape(raw_msg)
+                
+                # Cek apakah service adalah WhatsApp
+                is_whatsapp = "whatsapp" in service.lower()
+                
+                if is_whatsapp:
+                    # Tidak ada penambahan saldo untuk WhatsApp
+                    balance_text = "<i>WhatsApp OTP no balance</i>"
+                else:
+                    # Update Saldo untuk service lain
+                    old_bal, new_bal = update_profile_otp(wait_user_id)
+                    balance_text = f"${old_bal:.6f} > ${new_bal:.6f}"
                 
                 response_text = (
-                    "🗯️ <b>New Message Detected</b>\n\n"
-                    f"👤 <b>User:</b> {user_identity}\n"
+                    "🔔 <b>New Message Detected</b>\n\n"
                     f"☎️ <b>Nomor:</b> <code>{wait_number}</code>\n"
-                    f"🔑 <b>OTP:</b> <code>{otp}</code>\n\n"
-                    f"💰 <b>added:</b> ${old_bal:.6f} > ${new_bal:.6f}\n\n"
+                    f"⚙️ <b>Service:</b> <b>{service}</b>\n\n"
+                    f"💰 <b>added:</b> {balance_text}\n\n"
+                    f"🗯️ <b>Full Message:</b>\n"
+                    f"<blockquote>{safe_msg}</blockquote>\n\n"
                     "⚡ <b>Tap the Button To Copy OTP</b> ⚡"
                 )
                 
                 keyboard = create_otp_keyboard(otp)
                 tg_send(wait_user_id, response_text, reply_markup=keyboard)
 
-                print(f"[SUCCESS] OTP {otp} terkirim ke {user_identity}. Saldo Updated.")
+                print(f"[SUCCESS] OTP {service} terkirim ke {user_identity}.")
                 
                 wait_item['otp_received_time'] = time.time()
                 sms_was_changed = True
                 found_for_this_user = True
-                # SMS yang sudah diproses TIDAK dimasukkan ke remaining_sms (dihapus)
             else:
                 remaining_sms.append(sms_entry)
         
-        # Sinkronkan data sms_data agar SMS yang sudah diambil hilang dari list untuk iterasi user berikutnya
         sms_data = remaining_sms
         new_wait_list.append(wait_item)
 
-    # Simpan perubahan ke file
     if sms_was_changed:
         save_json_file(SMC_FILE, sms_data)
     
@@ -223,7 +239,7 @@ def sms_loop():
 if __name__ == "__main__":
     # --- PROSES PEMBERSIHAN SAAT PERTAMA KALI JALAN ---
     if os.path.exists(SMC_FILE):
-        print(f"[STARTUP] Mengosongkan {SMC_FILE} secara permanen...")
+        print(f"[STARTUP] Mengosongkan {SMC_FILE} untuk sesi baru...")
         save_json_file(SMC_FILE, []) 
     # --------------------------------------------------
     
