@@ -31,7 +31,7 @@ def create_otp_keyboard(otp):
     keyboard = {
         "inline_keyboard": [
             [
-                {"text": f"📋 {otp}", "copy_text": {"text": otp}},
+                {"text": f" {otp}", "copy_text": {"text": otp}},
                 {"text": "💸 Donate", "url": DONATE_LINK}
             ]
         ]
