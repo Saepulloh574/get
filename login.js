@@ -17,7 +17,6 @@ async function performLogin(page, email, password, loginUrl) {
     await page.waitForSelector("input[type='email']", { state: 'visible', timeout: 30000 });
     
     console.log("[BROWSER] Mengisi email dan password...");
-    // Menggunakan fill agar lebih cepat dan akurat
     await page.fill("input[type='email']", email); 
     await page.fill("input[type='password']", password);
     
@@ -25,31 +24,23 @@ async function performLogin(page, email, password, loginUrl) {
     const loginBtn = page.locator("button[type='submit']");
     await loginBtn.click();
 
-    // 1. TUNGGU SAMPAI MASUK KE DASHBOARD UTAMA
-    console.log("[BROWSER] Menunggu redirect otomatis ke /mdashboard...");
-    try {
-        await page.waitForURL('https://stexsms.com/mdashboard', { 
-            waitUntil: 'networkidle', 
-            timeout: 60000 
-        });
-        console.log("[BROWSER] Login Berhasil. Sekarang berada di Dashboard.");
-    } catch (error) {
-        console.log("[BROWSER] Peringatan: Redirect otomatis lambat, mencoba paksa navigasi...");
-    }
+    // TUNGGU 3 DETIK SETELAH KLIK SUBMIT (PROSES LOGIN DI BELAKANG LAYAR)
+    console.log("[BROWSER] Menunggu proses login selesai (3 detik)...");
+    await new Promise(r => setTimeout(r, 3000));
 
-    // 2. PASTE ULANG URL TARGET KE GETNUM
+    // PAKSA REDIRECT LANGSUNG KE GETNUM
     console.log("[BROWSER] Melakukan navigasi paksa ke: https://stexsms.com/mdashboard/getnum");
     await page.goto("https://stexsms.com/mdashboard/getnum", { 
         waitUntil: 'networkidle', 
         timeout: 60000 
     });
 
-    // Verifikasi akhir apakah input range sudah muncul di halaman target
+    // Verifikasi apakah sudah di halaman yang benar
     try {
         await page.waitForSelector("input[name='numberrange']", { state: 'visible', timeout: 15000 });
-        console.log("[BROWSER] KONFIRMASI: Berhasil berada di halaman GetNum. Siap bekerja!");
+        console.log("[BROWSER] KONFIRMASI: Berhasil berada di halaman GetNum.");
     } catch (e) {
-        console.log("[BROWSER] Error: Halaman GetNum tidak termuat sempurna. Melakukan refresh...");
+        console.log("[BROWSER] Peringatan: Input range tidak ditemukan, mencoba refresh halaman...");
         await page.reload({ waitUntil: 'networkidle' });
     }
 }
