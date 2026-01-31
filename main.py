@@ -125,7 +125,7 @@ except (TypeError, ValueError) as e:
     sys.exit(1)
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
-BASE_WEB_URL = "https://x.mnitnetwork.com/mdashboard/getnum" 
+BASE_WEB_URL = "https://stexsms.com/mdashboard/getnum" 
 
 # --- KONSTANTA FILE ---
 USER_FILE = "user.json" 
@@ -303,7 +303,7 @@ def generate_inline_keyboard(ranges):
         keyboard.append([{"text": text, "callback_data": callback_data}])
 
     # Tambahkan tombol manual range di paling bawah
-    keyboard.append([{"text": "Input Manual Range..🖊️", "callback_data": "manual_range"}])
+    keyboard.append([{"text": "INPUT MANUAL RANGE..🖊️", "callback_data": "manual_range"}])
     
     return {"inline_keyboard": keyboard}
 
@@ -451,9 +451,9 @@ async def tg_broadcast(message_text, admin_id):
 
     final_msg = (
         f"✅ Siaran Selesai!\n\n"
-        f"👥 Total Pengguna: **{len(user_ids)}**\n"
-        f"🟢 Berhasil Terkirim: **{success_count}**\n"
-        f"🔴 Gagal Terkirim: **{fail_count}**"
+        f"👥 Total Pengguna: <b>{len(user_ids)}</b>\n"
+        f"🟢 Berhasil Terkirim: <b>{success_count}</b>\n"
+        f"🔴 Gagal Terkirim: <b>{fail_count}</b>"
     )
     if admin_msg_id:
         tg_edit(admin_id, admin_msg_id, final_msg)
