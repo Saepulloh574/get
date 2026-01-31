@@ -7,6 +7,9 @@ const cron = require('node-cron');
 const dotenv = require('dotenv');
 const { fork } = require('child_process');
 
+// Import Logika Login
+const { performLogin } = require('./login.js');
+
 // Load Env
 dotenv.config();
 
@@ -342,24 +345,10 @@ async function initBrowser() {
     const context = await browser.newContext();
     sharedPage = await context.newPage();
 
-    console.log("[BROWSER] Logging in...");
     try {
-        await sharedPage.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-        
-        // Login Flow
-        await sharedPage.fill("input[name='email']", STEX_EMAIL); 
-        await sharedPage.fill("input[name='password']", STEX_PASSWORD);
-        
-        // Cari tombol login, sesuaikan selector jika perlu
-        const loginBtn = sharedPage.locator("button[type='submit']");
-        if (await loginBtn.isVisible()) {
-            await loginBtn.click();
-        } else {
-             // Fallback kalau selector beda
-             await sharedPage.keyboard.press('Enter');
-        }
+        // Menggunakan fungsi login dari login.js
+        await performLogin(sharedPage, STEX_EMAIL, STEX_PASSWORD, LOGIN_URL);
 
-        await sharedPage.waitForURL('**/mdashboard/**', { timeout: 60000 });
         console.log("[BROWSER] Login Success. Redirecting to GetNum...");
         
         await sharedPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
@@ -1004,11 +993,9 @@ async function main() {
     initializeFiles();
     
     // Subprocess dummy sms.py (menggunakan dummy sms.js jika tidak ada python)
-    // Asumsi user punya sms.py yang berjalan
     const smsProcess = fork('./sms.js', [], { silent: true });
 
     // CRON JOB: Restart Browser jam 7 Pagi WIB (Jakarta)
-    // "0 7 * * *" artinya menit 0, jam 7, setiap hari
     cron.schedule('0 7 * * *', async () => {
         console.log("[CRON] Refreshing Browser Session (07:00 WIB)...");
         const release = await playwrightLock.acquire();
@@ -1037,7 +1024,7 @@ async function main() {
     }
 }
 
-// Dummy sms.js creator if needed or just handle error
+// Dummy sms.js creator if needed
 if (!fs.existsSync('sms.js')) {
     fs.writeFileSync('sms.js', "console.log('SMS Service Mock Started'); setInterval(() => {}, 10000);");
 }
