@@ -52,13 +52,15 @@ let userQueue = [];
 let processingUsers = new Set(); // Mencegah spam request ganda
 let mainStandbyPage = null; 
 
-// Global State
+// Global State Sets/Maps
 let waitingBroadcastInput = new Set();
+let broadcastMessage = {};
 let verifiedUsers = new Set();
 let waitingAdminInput = new Set();
 let manualRangeInput = new Set();
 let get10RangeInput = new Set();
 let waitingDanaInput = new Set();
+let pendingMessage = {};
 let lastUsedRange = {};
 
 // Progress Bar Config
@@ -196,6 +198,7 @@ async function tgDelete(chatId, messageId) {
 async function tgSend(chatId, text, replyMarkup = null) {
     const strId = String(chatId);
     const profiles = loadProfiles();
+    // Hapus pesan bot sebelumnya jika ada
     if (profiles[strId] && profiles[strId].last_msg_id) {
         await tgDelete(chatId, profiles[strId].last_msg_id);
     }
@@ -293,55 +296,44 @@ async function getAllNumbersParallel(page, numToFetch) {
 }
 
 // ==============================================================================
-// LOGIC UTAMA (ANTRIAN FIFO JUJUR DENGAN SAFETY)
+// LOGIC UTAMA (FIFO QUEUE SYSTEM DENGAN SAFETY)
 // ==============================================================================
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
     const strId = String(userId);
 
-    // --- ANTI-SPAM (BLOCK DOUBLE REQUEST) ---
-    if (processingUsers.has(strId)) {
-        return; 
-    }
+    if (processingUsers.has(strId)) return; 
     
     let msgId = messageIdToEdit;
     if (!msgId) {
         msgId = await tgSend(userId, "⏳ Menyiapkan antrian...");
     }
 
-    // MASUKKAN KE DAFTAR TUNGGU
     processingUsers.add(strId);
     userQueue.push(strId);
 
-    // --- LOCK MUTEX DENGAN SAFETY WATCHDOG ---
     const release = await queueMutex.acquire();
     
-    // Watchdog 60 detik: Jika browser hang, paksa release mutex agar antrian tidak macet
     const safetyTimeout = setTimeout(() => {
-        console.log(`[WATCHDOG] Force release untuk user ${strId} karena melebihi limit.`);
-        if (processingUsers.has(strId)) {
-            userQueue = userQueue.filter(id => id !== strId);
-            processingUsers.delete(strId);
-        }
+        console.log(`[WATCHDOG] Force release untuk user ${strId}`);
+        userQueue = userQueue.filter(id => id !== strId);
+        processingUsers.delete(strId);
         try { release(); } catch(e) {}
     }, 60000); 
 
     let actionInterval = null;
     try {
-        // Tampilkan posisi antrian yang dinamis
         let currentPos = userQueue.indexOf(strId);
         if (currentPos > 0) {
             await tgEdit(userId, msgId, `⏳ <b>Menunggu di antrian active {${currentPos}}</b>\nMohon tunggu, bot sedang melayani user lain..`);
         }
 
-        // Loop sampai user berada di posisi terdepan (index 0)
         while (userQueue.indexOf(strId) > 0) {
             await new Promise(r => setTimeout(r, 1500));
             let newPos = userQueue.indexOf(strId);
             await tgEdit(userId, msgId, `⏳ <b>Menunggu di antrian active {${newPos}}</b>\nMohon tunggu, bot sedang melayani user lain..`);
         }
 
-        // --- MULAI PROSES BROWSER ---
         await tgEdit(userId, msgId, getProgressMessage(1, 0, prefix, clickCount));
         actionInterval = setInterval(() => { tgSendAction(userId, "typing"); }, 4500);
         
@@ -354,11 +346,9 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         const page = mainStandbyPage;
         const startOpTime = Date.now() / 1000;
-
         const INPUT_SELECTOR = "input[name='numberrange']";
         await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 5000 });
         
-        // Hapus tulisan lama dan isi dengan range baru
         await page.fill(INPUT_SELECTOR, ""); 
         await page.fill(INPUT_SELECTOR, prefix); 
         
@@ -372,12 +362,16 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
         let foundNumbers = [];
         const startTime = Date.now() / 1000;
+        let currentStep = 4;
         while ((Date.now() / 1000 - startTime) < 8.0) {
             foundNumbers = await getAllNumbersParallel(page, clickCount);
             if (foundNumbers.length >= clickCount) break;
             const elapsed = (Date.now() / 1000) - startOpTime;
             const targetStep = Math.min(11, Math.floor(elapsed * 1.5) + 4);
-            await tgEdit(userId, msgId, getProgressMessage(targetStep, 0, prefix, clickCount));
+            if (targetStep > currentStep) {
+                currentStep = targetStep;
+                await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, clickCount));
+            }
             await new Promise(r => setTimeout(r, 300));
         }
 
@@ -427,11 +421,8 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
     } finally {
         if (actionInterval) clearInterval(actionInterval);
         clearTimeout(safetyTimeout); 
-
-        // Bersihkan queue
         userQueue = userQueue.filter(id => id !== strId); 
         processingUsers.delete(strId);
-        
         try { release(); } catch(e) {} 
     }
 }
@@ -485,8 +476,7 @@ async function telegramLoop() {
                         continue;
                     }
                     if (dataCb.startsWith("select_range:")) {
-                        const prefix = dataCb.split(":")[1];
-                        processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
+                        processUserInput(userId, dataCb.split(":")[1], 1, usernameTg, firstName, menuMsgId);
                         continue;
                     }
                     if (dataCb.startsWith("change_num:")) {
@@ -531,7 +521,7 @@ async function telegramLoop() {
                     }
                 }
 
-                // MESSAGES
+                // MESSAGES (AUTO-CLEAN)
                 if (upd.message) {
                     const msg = upd.message;
                     const chatId = msg.chat.id;
@@ -577,8 +567,7 @@ async function telegramLoop() {
                     if (waitingAdminInput.has(userId)) {
                         waitingAdminInput.delete(userId);
                         const newRanges = [];
-                        const lines = text.trim().split('\n');
-                        lines.forEach(line => {
+                        text.trim().split('\n').forEach(line => {
                             if (line.includes(' > ')) {
                                 const parts = line.split(' > ');
                                 newRanges.push({ range: parts[0].trim(), country: parts[1].trim().toUpperCase(), emoji: GLOBAL_COUNTRY_EMOJI[parts[1].trim().toUpperCase()] || "🗺️", service: parts[2] ? parts[2].trim().toUpperCase() : "WA" });
@@ -685,16 +674,26 @@ async function main() {
         console.log("[MAIN] Browser & Standby Page Ready.");
     } catch (e) { console.error("[FATAL] Gagal Start Browser:", e); process.exit(1); }
 
+    // --- JALANKAN SEMUA SUB-PROSES (SMS, RANGE, MESSAGE) ---
     const smsProcess = fork('./sms.js', [], { silent: true });
+    const rangeProcess = fork('./range.js', [], { silent: true });
+    const messageProcess = fork('./message.js', [], { silent: true });
+
     cron.schedule('0 7 * * *', async () => {
         await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
-    try { await Promise.all([ telegramLoop(), expiryMonitorTask() ]); } 
+    try { 
+        await Promise.all([ telegramLoop(), expiryMonitorTask() ]); 
+    } 
     catch (e) { console.error("[FATAL ERROR]", e); } 
-    finally { if(smsProcess) smsProcess.kill(); }
+    finally { 
+        if(smsProcess) smsProcess.kill(); 
+        if(rangeProcess) rangeProcess.kill(); 
+        if(messageProcess) messageProcess.kill(); 
+    }
 }
 
 main();
