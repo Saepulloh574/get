@@ -4,7 +4,7 @@ const axios = require('axios');
 const cron = require('node-cron');
 const dotenv = require('dotenv');
 const { fork } = require('child_process');
-const { Mutex } = require('async-mutex'); // Tambahkan kembali untuk antrian
+const { Mutex } = require('async-mutex');
 
 // --- IMPORT SHARED BROWSER ---
 const { initSharedBrowser, getNewPage, restartBrowser } = require('./browser-shared.js');
@@ -46,20 +46,19 @@ const WAIT_FILE = "wait.json";
 const AKSES_GET10_FILE = "aksesget10.json";
 const PROFILE_FILE = "profile.json";
 
-// --- STATE BARU UNTUK ANTRIAN & STANDBY PAGE ---
+// --- STATE ANTRIAN REAL FIFO & STANDBY PAGE ---
 const queueMutex = new Mutex();
-let activeQueueCount = 0;
-let mainStandbyPage = null; // Tab tunggal yang standby terus
+let userQueue = []; 
+let processingUsers = new Set(); // Mencegah spam request ganda
+let mainStandbyPage = null; 
 
-// Global State Sets/Maps
+// Global State
 let waitingBroadcastInput = new Set();
-let broadcastMessage = {};
 let verifiedUsers = new Set();
 let waitingAdminInput = new Set();
 let manualRangeInput = new Set();
 let get10RangeInput = new Set();
 let waitingDanaInput = new Set();
-let pendingMessage = {};
 let lastUsedRange = {};
 
 // Progress Bar Config
@@ -68,7 +67,7 @@ const FILLED_CHAR = "█";
 const EMPTY_CHAR = "░";
 
 const STATUS_MAP = {
-    0: "Menunggu antrian active..", // Diubah untuk konteks antrian
+    0: "Menunggu antrian active..", 
     1: "Mempersiapkan tab standby..",
     3: "Mengirim permintaan nomor baru go.",
     4: "Memulai pencarian di tabel data..",
@@ -124,12 +123,22 @@ function hasGet10Access(userId) {
 }
 function loadProfiles() { return loadJson(PROFILE_FILE, {}); }
 function saveProfiles(data) { saveJson(PROFILE_FILE, data); }
+
 function getUserProfile(userId, firstName = "User") {
     const profiles = loadProfiles();
     const strId = String(userId);
     const today = new Date().toISOString().split('T')[0];
     if (!profiles[strId]) {
-        profiles[strId] = { name: firstName, dana: "Belum Diset", dana_an: "Belum Diset", balance: 0.000000, otp_semua: 0, otp_hari_ini: 0, last_active: today };
+        profiles[strId] = { 
+            name: firstName, 
+            dana: "Belum Diset", 
+            dana_an: "Belum Diset", 
+            balance: 0.000000, 
+            otp_semua: 0, 
+            otp_hari_ini: 0, 
+            last_active: today,
+            last_msg_id: null 
+        };
         saveProfiles(profiles);
     } else {
         if (profiles[strId].name !== firstName) { profiles[strId].name = firstName; saveProfiles(profiles); }
@@ -137,6 +146,7 @@ function getUserProfile(userId, firstName = "User") {
     }
     return profiles[strId];
 }
+
 function updateUserDana(userId, danaNumber, danaName) {
     const profiles = loadProfiles();
     if (profiles[String(userId)]) {
@@ -176,40 +186,56 @@ function generateInlineKeyboard(ranges) {
 }
 
 // ==============================================================================
-// FUNGSI API TELEGRAM
+// FUNGSI API TELEGRAM (AUTO-CLEAN MODE)
 // ==============================================================================
 
+async function tgDelete(chatId, messageId) {
+    try { await axios.post(`${API}/deleteMessage`, { chat_id: chatId, message_id: messageId }); } catch (e) { /* ignore */ }
+}
+
 async function tgSend(chatId, text, replyMarkup = null) {
+    const strId = String(chatId);
+    const profiles = loadProfiles();
+    if (profiles[strId] && profiles[strId].last_msg_id) {
+        await tgDelete(chatId, profiles[strId].last_msg_id);
+    }
     const data = { chat_id: chatId, text: text, parse_mode: "HTML" };
     if (replyMarkup) data.reply_markup = replyMarkup;
-    try { const res = await axios.post(`${API}/sendMessage`, data); if (res.data.ok) return res.data.result.message_id; } catch (e) { return null; }
+    try { 
+        const res = await axios.post(`${API}/sendMessage`, data); 
+        if (res.data.ok) {
+            const newMsgId = res.data.result.message_id;
+            const up = loadProfiles();
+            if (up[strId]) { up[strId].last_msg_id = newMsgId; saveProfiles(up); }
+            return newMsgId;
+        }
+    } catch (e) { return null; }
     return null;
 }
+
 async function tgEdit(chatId, messageId, text, replyMarkup = null) {
     const data = { chat_id: chatId, message_id: messageId, text: text, parse_mode: "HTML" };
     if (replyMarkup) data.reply_markup = replyMarkup;
     try { await axios.post(`${API}/editMessageText`, data); } catch (e) { /* ignore */ }
 }
-async function tgDelete(chatId, messageId) {
-    try { await axios.post(`${API}/deleteMessage`, { chat_id: chatId, message_id: messageId }); } catch (e) { /* ignore */ }
-}
+
 async function tgSendAction(chatId, action = "typing") {
     try { await axios.post(`${API}/sendChatAction`, { chat_id: chatId, action: action }); } catch (e) { /* ignore */ }
 }
 async function tgGetUpdates(offset) {
     try { const res = await axios.get(`${API}/getUpdates`, { params: { offset: offset, timeout: 5 } }); return res.data; } catch (e) { return { ok: false, result: [] }; }
 }
-async function isUserInGroup(userId, groupId) {
-    try {
-        const res = await axios.get(`${API}/getChatMember`, { params: { chat_id: groupId, user_id: userId } });
-        if (!res.data.ok) return false;
-        return ["member", "administrator", "creator"].includes(res.data.result.status);
-    } catch (e) { return false; }
-}
 async function isUserInBothGroups(userId) {
-    const [g1, g2] = await Promise.all([isUserInGroup(userId, GROUP_ID_1), isUserInGroup(userId, GROUP_ID_2)]);
+    const check = async (gid) => {
+        try {
+            const res = await axios.get(`${API}/getChatMember`, { params: { chat_id: gid, user_id: userId } });
+            return ["member", "administrator", "creator"].includes(res.data.result.status);
+        } catch (e) { return false; }
+    };
+    const [g1, g2] = await Promise.all([check(GROUP_ID_1), check(GROUP_ID_2)]);
     return g1 && g2;
 }
+
 async function tgBroadcast(messageText, adminId) {
     const userIds = Array.from(loadUsers());
     let success = 0, fail = 0;
@@ -217,11 +243,11 @@ async function tgBroadcast(messageText, adminId) {
     for (let i = 0; i < userIds.length; i++) {
         const uid = userIds[i];
         if (i % 10 === 0 && adminMsgId) await tgEdit(adminId, adminMsgId, `🔄 Siaran: **${i}/${userIds.length}** (Sukses: ${success}, Gagal: ${fail})`);
-        const res = await tgSend(uid, messageText);
-        if (res) success++; else fail++;
+        const res = await axios.post(`${API}/sendMessage`, { chat_id: uid, text: messageText, parse_mode: "HTML" }).catch(e => null);
+        if (res && res.data.ok) success++; else fail++;
         await new Promise(r => setTimeout(r, 50));
     }
-    const report = `✅ Siaran Selesai!\n👥 Total: <b>${userIds.length}</b>\n🟢 Sukses: <b>${success}</b>\n🔴 Gagal: <b>${fail}</b>`;
+    const report = `✅ Siaran Selesai!\n🟢 Sukses: <b>${success}</b>\n🔴 Gagal: <b>${fail}</b>`;
     if (adminMsgId) await tgEdit(adminId, adminMsgId, report); else await tgSend(adminId, report);
 }
 
@@ -245,8 +271,7 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
         const countryEl = row.locator("td:nth-child(2) span.text-slate-200");
         const countryList = await countryEl.allInnerTexts();
         const country = countryList.length > 0 ? countryList[0].trim().toUpperCase() : "UNKNOWN";
-        if (number && number.length > 5) return { number, country, status: statusText };
-        return null;
+        return { number, country, status: statusText };
     } catch (e) { return null; }
 }
 
@@ -268,51 +293,63 @@ async function getAllNumbersParallel(page, numToFetch) {
 }
 
 // ==============================================================================
-// LOGIC UTAMA (REFACTORED WITH QUEUE & STANDBY PAGE)
+// LOGIC UTAMA (ANTRIAN FIFO JUJUR DENGAN SAFETY)
 // ==============================================================================
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
-    let msgId = messageIdToEdit || pendingMessage[userId];
-    const numToFetch = clickCount;
+    const strId = String(userId);
 
-    // --- MANAJEMEN ANTRIAN ---
-    activeQueueCount++;
-    if (activeQueueCount > 1) {
-        const queuePos = activeQueueCount - 1;
-        const queueText = `⏳ <b>Menunggu di antrian active {${queuePos}}</b>\nMohon tunggu, bot sedang melayani user lain..`;
-        if (!msgId) {
-            msgId = await tgSend(userId, queueText);
-        } else {
-            await tgEdit(userId, msgId, queueText);
-        }
-    } else {
-        if (!msgId) {
-            msgId = await tgSend(userId, getProgressMessage(0, 0, prefix, numToFetch));
-        }
+    // --- ANTI-SPAM (BLOCK DOUBLE REQUEST) ---
+    if (processingUsers.has(strId)) {
+        return; 
     }
-    if (!msgId) { activeQueueCount--; return; }
+    
+    let msgId = messageIdToEdit;
+    if (!msgId) {
+        msgId = await tgSend(userId, "⏳ Menyiapkan antrian...");
+    }
 
-    // Mulai Kunci Mutex (Satu user pada satu waktu)
+    // MASUKKAN KE DAFTAR TUNGGU
+    processingUsers.add(strId);
+    userQueue.push(strId);
+
+    // --- LOCK MUTEX DENGAN SAFETY WATCHDOG ---
     const release = await queueMutex.acquire();
+    
+    // Watchdog 60 detik: Jika browser hang, paksa release mutex agar antrian tidak macet
+    const safetyTimeout = setTimeout(() => {
+        console.log(`[WATCHDOG] Force release untuk user ${strId} karena melebihi limit.`);
+        if (processingUsers.has(strId)) {
+            userQueue = userQueue.filter(id => id !== strId);
+            processingUsers.delete(strId);
+        }
+        try { release(); } catch(e) {}
+    }, 60000); 
 
     let actionInterval = null;
     try {
-        // Jika antrian lebih dari 1, edit pesan saat giliran tiba
-        if (activeQueueCount >= 1) {
-            await tgEdit(userId, msgId, getProgressMessage(1, 0, prefix, numToFetch));
+        // Tampilkan posisi antrian yang dinamis
+        let currentPos = userQueue.indexOf(strId);
+        if (currentPos > 0) {
+            await tgEdit(userId, msgId, `⏳ <b>Menunggu di antrian active {${currentPos}}</b>\nMohon tunggu, bot sedang melayani user lain..`);
         }
 
+        // Loop sampai user berada di posisi terdepan (index 0)
+        while (userQueue.indexOf(strId) > 0) {
+            await new Promise(r => setTimeout(r, 1500));
+            let newPos = userQueue.indexOf(strId);
+            await tgEdit(userId, msgId, `⏳ <b>Menunggu di antrian active {${newPos}}</b>\nMohon tunggu, bot sedang melayani user lain..`);
+        }
+
+        // --- MULAI PROSES BROWSER ---
+        await tgEdit(userId, msgId, getProgressMessage(1, 0, prefix, clickCount));
         actionInterval = setInterval(() => { tgSendAction(userId, "typing"); }, 4500);
         
-        // Pastikan Standby Page Siap & Di Halaman Yang Benar
         if (!mainStandbyPage || mainStandbyPage.isClosed()) {
             mainStandbyPage = await getNewPage();
             await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
-        } else {
-            // Cek jika session logout atau halaman berubah, balikkan ke URL target
-            if (mainStandbyPage.url() !== TARGET_URL) {
-                await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
-            }
+        } else if (mainStandbyPage.url() !== TARGET_URL) {
+            await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
         }
 
         const page = mainStandbyPage;
@@ -321,44 +358,26 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         const INPUT_SELECTOR = "input[name='numberrange']";
         await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 5000 });
         
-        // Bersihkan & Isi Range
-        await page.fill(INPUT_SELECTOR, "");
-        await page.fill(INPUT_SELECTOR, prefix);
+        // Hapus tulisan lama dan isi dengan range baru
+        await page.fill(INPUT_SELECTOR, ""); 
+        await page.fill(INPUT_SELECTOR, prefix); 
         
-        let currentStep = 2; 
         const BUTTON_SELECTOR = "button:has-text('Get Number')";
-        
-        // Klik sesuai jumlah (Super Fast)
         for (let i = 0; i < clickCount; i++) {
             await page.click(BUTTON_SELECTOR, { force: true });
         }
 
-        currentStep = 3; 
-        await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-
-        // Delay sangat singkat karena tab sudah standby
+        await tgEdit(userId, msgId, getProgressMessage(3, 0, prefix, clickCount));
         await new Promise(r => setTimeout(r, 1000));
-        currentStep = 4;
-        await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
         let foundNumbers = [];
         const startTime = Date.now() / 1000;
-        
-        // Loop pencarian cepat
-        while ((Date.now() / 1000 - startTime) < 8.0) { // Timeout pencarian 8 detik
-            foundNumbers = await getAllNumbersParallel(page, numToFetch);
-            if (foundNumbers.length >= numToFetch) {
-                currentStep = 12;
-                break;
-            }
-            
-            // Progress Update
+        while ((Date.now() / 1000 - startTime) < 8.0) {
+            foundNumbers = await getAllNumbersParallel(page, clickCount);
+            if (foundNumbers.length >= clickCount) break;
             const elapsed = (Date.now() / 1000) - startOpTime;
             const targetStep = Math.min(11, Math.floor(elapsed * 1.5) + 4);
-            if (targetStep > currentStep) {
-                currentStep = targetStep;
-                await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-            }
+            await tgEdit(userId, msgId, getProgressMessage(targetStep, 0, prefix, clickCount));
             await new Promise(r => setTimeout(r, 300));
         }
 
@@ -368,9 +387,8 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         }
 
         const mainCountry = foundNumbers[0].country || "UNKNOWN";
-        await tgEdit(userId, msgId, getProgressMessage(12, 0, prefix, numToFetch));
+        await tgEdit(userId, msgId, getProgressMessage(12, 0, prefix, clickCount));
 
-        // Save Data
         foundNumbers.forEach(entry => {
             saveCache({ number: entry.number, country: entry.country, user_id: userId, time: Date.now() });
             addToWaitList(entry.number, userId, usernameTg, firstNameTg);
@@ -379,15 +397,15 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         lastUsedRange[userId] = prefix;
         const emoji = GLOBAL_COUNTRY_EMOJI[mainCountry] || "🗺️";
         
-        let msg = (numToFetch === 10) ? "✅ The number is already.\n\n<code>" : "✅ The number is ready\n\n";
-        if (numToFetch === 10) {
+        let msg = (clickCount === 10) ? "✅ The number is already.\n\n<code>" : "✅ The number is ready\n\n";
+        if (clickCount === 10) {
             foundNumbers.slice(0, 10).forEach(entry => msg += `${entry.number}\n`);
             msg += "</code>";
         } else {
-            if (numToFetch === 1) {
+            if (clickCount === 1) {
                 msg += `📞 Number  : <code>${foundNumbers[0].number}</code>\n`;
             } else {
-                foundNumbers.slice(0, numToFetch).forEach((entry, idx) => {
+                foundNumbers.slice(0, clickCount).forEach((entry, idx) => {
                     msg += `📞 Number ${idx+1} : <code>${entry.number}</code>\n`;
                 });
             }
@@ -408,8 +426,13 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         if (msgId) await tgEdit(userId, msgId, `❌ Error: ${e.message}`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
-        activeQueueCount--; // Kurangi antrian
-        release(); // Lepas kunci untuk user berikutnya
+        clearTimeout(safetyTimeout); 
+
+        // Bersihkan queue
+        userQueue = userQueue.filter(id => id !== strId); 
+        processingUsers.delete(strId);
+        
+        try { release(); } catch(e) {} 
     }
 }
 
@@ -429,11 +452,86 @@ async function telegramLoop() {
             for (const upd of data.result) {
                 offset = upd.update_id + 1;
                 
-                // --- Tambahan Answer Callback agar tidak loading ---
+                // CALLBACKS
                 if (upd.callback_query) {
-                    try { await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: upd.callback_query.id }); } catch(e){}
+                    const cq = upd.callback_query;
+                    const userId = cq.from.id;
+                    const dataCb = cq.data;
+                    const chatId = cq.message.chat.id;
+                    const menuMsgId = cq.message.message_id;
+                    const firstName = cq.from.first_name || "User";
+                    const usernameTg = cq.from.username;
+
+                    try { await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: cq.id }); } catch(e){}
+
+                    if (dataCb === "verify") {
+                        if (await isUserInBothGroups(userId)) {
+                            verifiedUsers.add(userId); saveUsers(userId);
+                            await tgSend(userId, "✅ Verifikasi Sukses! Klik /start");
+                        } else { await axios.post(`${API}/sendMessage`, { chat_id: chatId, text: "❌ Belum gabung semua grup." }); }
+                        continue;
+                    }
+                    if (dataCb === "getnum") {
+                        if (!verifiedUsers.has(userId)) continue;
+                        const ranges = loadInlineRanges();
+                        const kb = ranges.length > 0 ? generateInlineKeyboard(ranges) : { inline_keyboard: [[{ text: "✍️ Manual Range", callback_data: "manual_range" }]] };
+                        const msg = `\nPilih range dibawah atau manual range\n<b>👉 <a href="https://t.me/informasiprv">Click Method FB di sini</a></b>\n<blockquote>Range di bawah akan berubah setiap ada yang baru</blockquote>\n`;
+                        await tgEdit(chatId, menuMsgId, msg, kb);
+                        continue;
+                    }
+                    if (dataCb === "manual_range") {
+                        manualRangeInput.add(userId);
+                        await tgEdit(chatId, menuMsgId, "Kirim Range manual:");
+                        continue;
+                    }
+                    if (dataCb.startsWith("select_range:")) {
+                        const prefix = dataCb.split(":")[1];
+                        processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
+                        continue;
+                    }
+                    if (dataCb.startsWith("change_num:")) {
+                        const parts = dataCb.split(":");
+                        processUserInput(userId, parts[2], parseInt(parts[1]), usernameTg, firstName, menuMsgId);
+                        continue;
+                    }
+                    if (dataCb === "withdraw_menu") {
+                        const prof = getUserProfile(userId, firstName);
+                        const kbWd = { inline_keyboard: [[{ text: "$1", callback_data: "wd_req:1.0" }, { text: "$2", callback_data: "wd_req:2.0" }], [{ text: "🔙 Back", callback_data: "getnum" }]] };
+                        await tgEdit(chatId, menuMsgId, `Saldo: $${prof.balance.toFixed(6)}`, kbWd);
+                        continue;
+                    }
+                    if (dataCb.startsWith("wd_req:")) {
+                        const amount = parseFloat(dataCb.split(":")[1]);
+                        const allProfiles = loadProfiles();
+                        const prof = allProfiles[String(userId)];
+                        if (prof && prof.balance >= amount) {
+                            allProfiles[String(userId)].balance -= amount;
+                            saveProfiles(allProfiles); 
+                            await axios.post(`${API}/sendMessage`, { chat_id: ADMIN_ID, text: `User ${userId} WD $${amount}`, reply_markup: { inline_keyboard: [[{ text: "Approve", callback_data: `wd_act:apr:${userId}:${amount}` }, { text: "Cancel", callback_data: `wd_act:cncl:${userId}:${amount}` }]] } });
+                            await tgEdit(chatId, menuMsgId, "✅ WD Request sent.");
+                        } else await tgSend(chatId, "❌ Saldo kurang.");
+                        continue;
+                    }
+                    if (dataCb.startsWith("wd_act:") && userId === ADMIN_ID) {
+                        const parts = dataCb.split(":");
+                        const action = parts[1];
+                        const targetId = String(parts[2]);
+                        const amount = parseFloat(parts[3]);
+                        if (action === "apr") {
+                            await tgEdit(chatId, menuMsgId, "✅ WD Approved.");
+                            await axios.post(`${API}/sendMessage`, { chat_id: targetId, text: "✅ WD Sukses." });
+                        } else {
+                            const profs = loadProfiles();
+                            if(profs[targetId]) profs[targetId].balance += amount;
+                            saveProfiles(profs);
+                            await tgEdit(chatId, menuMsgId, "❌ WD Cancelled.");
+                            await axios.post(`${API}/sendMessage`, { chat_id: targetId, text: "❌ WD Dibatalkan." });
+                        }
+                        continue;
+                    }
                 }
 
+                // MESSAGES
                 if (upd.message) {
                     const msg = upd.message;
                     const chatId = msg.chat.id;
@@ -443,16 +541,16 @@ async function telegramLoop() {
                     const mention = usernameTg ? `@${usernameTg}` : `<a href='tg://user?id=${userId}'>${firstName}</a>`;
                     const text = msg.text || "";
 
+                    await tgDelete(chatId, msg.message_id); 
+
                     if (userId === ADMIN_ID) {
                         if (text.startsWith("/add")) {
                             waitingAdminInput.add(userId);
-                            const mid = await tgSend(userId, "Kirim range > country > service");
-                            if (mid) pendingMessage[userId] = mid;
+                            await tgSend(userId, "Kirim range > country > service");
                             continue;
                         } else if (text === "/info") {
                             waitingBroadcastInput.add(userId);
-                            const mid = await tgSend(userId, "Pesan siaran?");
-                            if (mid) broadcastMessage[userId] = mid;
+                            await tgSend(userId, "Pesan siaran?");
                             continue;
                         } else if (text.startsWith("/get10akses ")) {
                             const targetId = text.split(" ")[1];
@@ -471,11 +569,8 @@ async function telegramLoop() {
                     if (text === "/get10") {
                         if (hasGet10Access(userId)) {
                             get10RangeInput.add(userId);
-                            const mid = await tgSend(userId, "kirim range contoh 225071606XXX");
-                            if (mid) pendingMessage[userId] = mid;
-                        } else {
-                            await tgSend(userId, "❌ No Access.");
-                        }
+                            await tgSend(userId, "kirim range contoh 225071606XXX");
+                        } else await tgSend(userId, "❌ No Access.");
                         continue;
                     }
 
@@ -489,21 +584,19 @@ async function telegramLoop() {
                                 newRanges.push({ range: parts[0].trim(), country: parts[1].trim().toUpperCase(), emoji: GLOBAL_COUNTRY_EMOJI[parts[1].trim().toUpperCase()] || "🗺️", service: parts[2] ? parts[2].trim().toUpperCase() : "WA" });
                             }
                         });
-                        const pMsgId = pendingMessage[userId];
-                        delete pendingMessage[userId];
                         const current = loadInlineRanges();
                         current.push(...newRanges);
                         saveInlineRanges(current);
-                        await tgEdit(userId, pMsgId, `✅ Saved ${newRanges.length} ranges.`);
+                        await tgSend(userId, `✅ Saved ${newRanges.length} ranges.`);
                         continue;
                     }
 
                     if (waitingBroadcastInput.has(userId)) {
                         waitingBroadcastInput.delete(userId);
-                        const pMsgId = broadcastMessage[userId];
-                        delete broadcastMessage[userId];
-                        if (text === ".batal") await tgEdit(chatId, pMsgId, "❌ Batal.");
-                        else { await tgEdit(chatId, pMsgId, "✅ Siaran..."); await tgBroadcast(text, userId); }
+                        if (text !== ".batal") { 
+                            await tgSend(userId, "✅ Siaran diproses..."); 
+                            await tgBroadcast(text, userId); 
+                        } else await tgSend(userId, "❌ Batal.");
                         continue;
                     }
 
@@ -519,11 +612,8 @@ async function telegramLoop() {
 
                     if (get10RangeInput.has(userId)) {
                         get10RangeInput.delete(userId);
-                        const prefix = text.trim();
-                        let menuMsgId = pendingMessage[userId];
-                        delete pendingMessage[userId];
-                        if (/^\+?\d{3,15}[Xx*#]+$/.test(prefix)) {
-                            processUserInput(userId, prefix, 10, usernameTg, firstName, menuMsgId);
+                        if (/^\+?\d{3,15}[Xx*#]+$/.test(text.trim())) {
+                            processUserInput(userId, text.trim(), 10, usernameTg, firstName);
                         } else await tgSend(chatId, "❌ Format salah.");
                         continue;
                     }
@@ -531,11 +621,8 @@ async function telegramLoop() {
                     const isManualFormat = /^\+?\d{3,15}[Xx*#]+$/.test(text.trim());
                     if (manualRangeInput.has(userId) || (verifiedUsers.has(userId) && isManualFormat)) {
                         manualRangeInput.delete(userId);
-                        const prefix = text.trim();
-                        let menuMsgId = pendingMessage[userId];
-                        delete pendingMessage[userId];
                         if (isManualFormat) {
-                            processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
+                            processUserInput(userId, text.trim(), 1, usernameTg, firstName);
                         } else await tgSend(chatId, "❌ Format salah.");
                         continue;
                     }
@@ -561,83 +648,9 @@ async function telegramLoop() {
                         continue;
                     }
                 }
-
-                if (upd.callback_query) {
-                    const cq = upd.callback_query;
-                    const userId = cq.from.id;
-                    const dataCb = cq.data;
-                    const chatId = cq.message.chat.id;
-                    const menuMsgId = cq.message.message_id;
-                    const firstName = cq.from.first_name || "User";
-                    const usernameTg = cq.from.username;
-
-                    if (dataCb === "verify") {
-                        if (await isUserInBothGroups(userId)) {
-                            verifiedUsers.add(userId); saveUsers(userId);
-                            await tgEdit(chatId, menuMsgId, "✅ Verifikasi Sukses! Ketik /start");
-                        } else { await tgSend(chatId, "❌ Belum gabung semua grup."); }
-                        continue;
-                    }
-                    if (dataCb === "getnum") {
-                        if (!verifiedUsers.has(userId)) continue;
-                        const ranges = loadInlineRanges();
-                        const kb = ranges.length > 0 ? generateInlineKeyboard(ranges) : { inline_keyboard: [[{ text: "✍️ Manual Range", callback_data: "manual_range" }]] };
-                        await tgEdit(chatId, menuMsgId, "Pilih Range:", kb);
-                        continue;
-                    }
-                    if (dataCb === "manual_range") {
-                        manualRangeInput.add(userId);
-                        await tgEdit(chatId, menuMsgId, "Kirim Range manual:");
-                        pendingMessage[userId] = menuMsgId;
-                        continue;
-                    }
-                    if (dataCb.startsWith("select_range:")) {
-                        const prefix = dataCb.split(":")[1];
-                        processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
-                        continue;
-                    }
-                    if (dataCb.startsWith("change_num:")) {
-                        const parts = dataCb.split(":");
-                        await tgDelete(chatId, menuMsgId);
-                        processUserInput(userId, parts[2], parseInt(parts[1]), usernameTg, firstName);
-                        continue;
-                    }
-                    if (dataCb === "withdraw_menu") {
-                        const prof = getUserProfile(userId, firstName);
-                        const kbWd = { inline_keyboard: [[{ text: "$1", callback_data: "wd_req:1.0" }, { text: "$2", callback_data: "wd_req:2.0" }], [{ text: "🔙 Back", callback_data: "verify" }]] };
-                        await tgEdit(chatId, menuMsgId, `Saldo: $${prof.balance.toFixed(6)}`, kbWd);
-                        continue;
-                    }
-                    if (dataCb.startsWith("wd_req:")) {
-                        const amount = parseFloat(dataCb.split(":")[1]);
-                        const prof = loadProfiles()[String(userId)];
-                        if (prof && prof.balance >= amount) {
-                            prof.balance -= amount; saveProfiles(loadProfiles());
-                            await tgSend(ADMIN_ID, `User ${userId} WD $${amount}`, { inline_keyboard: [[{ text: "Approve", callback_data: `wd_act:apr:${userId}:${amount}` }, { text: "Cancel", callback_data: `wd_act:cncl:${userId}:${amount}` }]] });
-                            await tgEdit(chatId, menuMsgId, "✅ WD Request sent.");
-                        } else await tgSend(chatId, "❌ Saldo kurang.");
-                        continue;
-                    }
-                    if (dataCb.startsWith("wd_act:") && userId === ADMIN_ID) {
-                        const parts = dataCb.split(":");
-                        const action = parts[1];
-                        const targetId = parseInt(parts[2]);
-                        const amount = parseFloat(parts[3]);
-                        if (action === "apr") {
-                            await tgEdit(chatId, menuMsgId, "✅ WD Approved.");
-                            await tgSend(targetId, "✅ WD Sukses.");
-                        } else {
-                            const profiles = loadProfiles();
-                            profiles[String(targetId)].balance += amount; saveProfiles(profiles);
-                            await tgEdit(chatId, menuMsgId, "❌ WD Cancelled.");
-                            await tgSend(targetId, "❌ WD Dibatalkan.");
-                        }
-                        continue;
-                    }
-                }
             }
         }
-        await new Promise(r => setTimeout(r, 50));
+        await new Promise(r => setTimeout(r, 300)); 
     }
 }
 
@@ -649,8 +662,7 @@ async function expiryMonitorTask() {
             const updatedList = [];
             for (const item of waitList) {
                 if (now - item.timestamp > 1200) {
-                    const msgId = await tgSend(item.user_id, `⚠️ Nomor ${item.number} expired.`);
-                    if (msgId) setTimeout(() => tgDelete(item.user_id, msgId), 30000);
+                    await axios.post(`${API}/sendMessage`, { chat_id: item.user_id, text: `⚠️ Nomor ${item.number} expired.` });
                 } else updatedList.push(item);
             }
             saveWaitList(updatedList);
@@ -658,50 +670,31 @@ async function expiryMonitorTask() {
     }, 10000);
 }
 
-// ==============================================================================
-// INITIALIZATION
-// ==============================================================================
-
 function initializeFiles() {
     [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE].forEach(f => { if (!fs.existsSync(f)) saveJson(f, []); });
     if (!fs.existsSync(PROFILE_FILE)) saveJson(PROFILE_FILE, {});
 }
 
 async function main() {
-    console.log("[INFO] Starting NodeJS Bot (Standby Page & Queue Mode)...");
+    console.log("[INFO] Starting NodeJS Bot (Professional FIFO Queue System)...");
     initializeFiles();
-    
-    // --- 1. START SHARED BROWSER ---
     try {
         await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
-        console.log("[MAIN] Shared Browser Ready.");
-
-        // --- 2. PREPARE STANDBY PAGE ---
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
-        console.log("[MAIN] Standby Page Ready.");
-
-    } catch (e) {
-        console.error("[FATAL] Gagal Start Browser/Standby Page:", e);
-        process.exit(1);
-    }
+        console.log("[MAIN] Browser & Standby Page Ready.");
+    } catch (e) { console.error("[FATAL] Gagal Start Browser:", e); process.exit(1); }
 
     const smsProcess = fork('./sms.js', [], { silent: true });
-
-    // CRON: Restart Browser & Re-init Standby Page
     cron.schedule('0 7 * * *', async () => {
-        console.log("[CRON] Restarting Browser...");
         await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
-    try {
-        await Promise.all([ telegramLoop(), expiryMonitorTask() ]);
-    } catch (e) { console.error("[FATAL ERROR]", e); } 
-    finally { smsProcess.kill(); }
+    try { await Promise.all([ telegramLoop(), expiryMonitorTask() ]); } 
+    catch (e) { console.error("[FATAL ERROR]", e); } 
+    finally { if(smsProcess) smsProcess.kill(); }
 }
-
-if (!fs.existsSync('sms.js')) fs.writeFileSync('sms.js', "console.log('SMS Service Mock'); setInterval(()=>{},10000);");
 
 main();
