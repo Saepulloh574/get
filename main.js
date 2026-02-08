@@ -1,16 +1,12 @@
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-// const { chromium } = require('playwright'); // <-- HAPUS INI, sudah dipindah
-// const { Mutex } = require('async-mutex');   // <-- HAPUS INI, sudah dipindah
 const cron = require('node-cron');
 const dotenv = require('dotenv');
 const { fork } = require('child_process');
+const { Mutex } = require('async-mutex'); // Tambahkan kembali untuk antrian
 
-// Import Logika Login (Hanya dipanggil via browser-shared sekarang)
-// const { performLogin } = require('./login.js'); 
-
-// --- IMPORT BARU: SHARED BROWSER ---
+// --- IMPORT SHARED BROWSER ---
 const { initSharedBrowser, getNewPage, restartBrowser } = require('./browser-shared.js');
 
 // Load Env
@@ -34,7 +30,7 @@ if (!BOT_TOKEN || !GROUP_ID_1 || !GROUP_ID_2 || !ADMIN_ID || !STEX_EMAIL || !STE
     process.exit(1);
 }
 
-const TARGET_URL = "https://stexsms.com/mdashboard/getnum"; // Login URL sudah diurus browser-shared
+const TARGET_URL = "https://stexsms.com/mdashboard/getnum"; 
 const BOT_USERNAME_LINK = "https://t.me/myzuraisgoodbot";
 const GROUP_LINK_1 = "https://t.me/+E5grTSLZvbpiMTI1";
 const GROUP_LINK_2 = "https://t.me/zura14g";
@@ -50,10 +46,10 @@ const WAIT_FILE = "wait.json";
 const AKSES_GET10_FILE = "aksesget10.json";
 const PROFILE_FILE = "profile.json";
 
-// --- STATE LAMA DIHAPUS (Browser handled by shared) ---
-// const playwrightLock = new Mutex(); // HAPUS
-// let browser = null;                 // HAPUS
-// let sharedPage = null;              // HAPUS
+// --- STATE BARU UNTUK ANTRIAN & STANDBY PAGE ---
+const queueMutex = new Mutex();
+let activeQueueCount = 0;
+let mainStandbyPage = null; // Tab tunggal yang standby terus
 
 // Global State Sets/Maps
 let waitingBroadcastInput = new Set();
@@ -72,8 +68,8 @@ const FILLED_CHAR = "█";
 const EMPTY_CHAR = "░";
 
 const STATUS_MAP = {
-    0: "Menunggu antrian page baru..",
-    1: "Membuka tab & memuat web..",
+    0: "Menunggu antrian active..", // Diubah untuk konteks antrian
+    1: "Mempersiapkan tab standby..",
     3: "Mengirim permintaan nomor baru go.",
     4: "Memulai pencarian di tabel data..",
     5: "Mencari nomor pada siklus satu run",
@@ -82,7 +78,7 @@ const STATUS_MAP = {
 };
 
 // ==============================================================================
-// FUNGSI UTILITAS MANAJEMEN FILE (TETAP SAMA)
+// FUNGSI UTILITAS MANAJEMEN FILE
 // ==============================================================================
 
 function loadJson(filename, defaultVal = []) {
@@ -180,7 +176,7 @@ function generateInlineKeyboard(ranges) {
 }
 
 // ==============================================================================
-// FUNGSI API TELEGRAM (TETAP SAMA)
+// FUNGSI API TELEGRAM
 // ==============================================================================
 
 async function tgSend(chatId, text, replyMarkup = null) {
@@ -230,31 +226,25 @@ async function tgBroadcast(messageText, adminId) {
 }
 
 // ==============================================================================
-// BROWSER HELPERS (Diperbarui untuk menerima Page Object)
+// BROWSER HELPERS
 // ==============================================================================
 
 async function getNumberAndCountryFromRow(rowSelector, page) {
     try {
         const row = page.locator(rowSelector);
         if (!(await row.isVisible())) return null;
-
         const phoneEl = row.locator("td:nth-child(1) span.font-mono");
         const numberRawList = await phoneEl.allInnerTexts();
         const numberRaw = numberRawList.length > 0 ? numberRawList[0].trim() : null;
-        
         const number = numberRaw ? normalizeNumber(numberRaw) : null;
         if (!number || isInCache(number)) return null;
-
         const statusEl = row.locator("td:nth-child(1) div:nth-child(2) span");
         const statusTextList = await statusEl.allInnerTexts();
         const statusText = statusTextList.length > 0 ? statusTextList[0].trim().toLowerCase() : "unknown";
-
         if (statusText.includes("success") || statusText.includes("failed")) return null;
-
         const countryEl = row.locator("td:nth-child(2) span.text-slate-200");
         const countryList = await countryEl.allInnerTexts();
         const country = countryList.length > 0 ? countryList[0].trim().toUpperCase() : "UNKNOWN";
-
         if (number && number.length > 5) return { number, country, status: statusText };
         return null;
     } catch (e) { return null; }
@@ -262,12 +252,10 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
 
 async function getAllNumbersParallel(page, numToFetch) {
     const tasks = [];
-    // Menggunakan 'page' yang dilempar dari processUserInput
     for (let i = 1; i <= numToFetch + 5; i++) {
         tasks.push(getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page));
     }
     const results = await Promise.all(tasks);
-    
     const currentNumbers = [];
     const seen = new Set();
     for (const res of results) {
@@ -280,108 +268,98 @@ async function getAllNumbersParallel(page, numToFetch) {
 }
 
 // ==============================================================================
-// LOGIC UTAMA (REFACTORED UNTUK SHARED BROWSER)
+// LOGIC UTAMA (REFACTORED WITH QUEUE & STANDBY PAGE)
 // ==============================================================================
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
     let msgId = messageIdToEdit || pendingMessage[userId];
-    let actionInterval = null;
     const numToFetch = clickCount;
 
-    // Send initial status
-    if (!msgId) {
-        msgId = await tgSend(userId, getProgressMessage(0, 0, prefix, numToFetch));
-        if (!msgId) return;
+    // --- MANAJEMEN ANTRIAN ---
+    activeQueueCount++;
+    if (activeQueueCount > 1) {
+        const queuePos = activeQueueCount - 1;
+        const queueText = `⏳ <b>Menunggu di antrian active {${queuePos}}</b>\nMohon tunggu, bot sedang melayani user lain..`;
+        if (!msgId) {
+            msgId = await tgSend(userId, queueText);
+        } else {
+            await tgEdit(userId, msgId, queueText);
+        }
     } else {
-        await tgEdit(userId, msgId, getProgressMessage(0, 0, prefix, numToFetch));
+        if (!msgId) {
+            msgId = await tgSend(userId, getProgressMessage(0, 0, prefix, numToFetch));
+        }
     }
+    if (!msgId) { activeQueueCount--; return; }
 
-    // Variabel Page Lokal (Milik User Ini Saja)
-    let page = null;
+    // Mulai Kunci Mutex (Satu user pada satu waktu)
+    const release = await queueMutex.acquire();
 
+    let actionInterval = null;
     try {
-        // --- 1. DAPATKAN TAB BARU DARI SHARED BROWSER ---
-        // Tab ini sudah otomatis Login karena satu context
-        page = await getNewPage();
+        // Jika antrian lebih dari 1, edit pesan saat giliran tiba
+        if (activeQueueCount >= 1) {
+            await tgEdit(userId, msgId, getProgressMessage(1, 0, prefix, numToFetch));
+        }
 
         actionInterval = setInterval(() => { tgSendAction(userId, "typing"); }, 4500);
-        let currentStep = 1;
-        await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
         
+        // Pastikan Standby Page Siap & Di Halaman Yang Benar
+        if (!mainStandbyPage || mainStandbyPage.isClosed()) {
+            mainStandbyPage = await getNewPage();
+            await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+        } else {
+            // Cek jika session logout atau halaman berubah, balikkan ke URL target
+            if (mainStandbyPage.url() !== TARGET_URL) {
+                await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+            }
+        }
+
+        const page = mainStandbyPage;
         const startOpTime = Date.now() / 1000;
 
-        // --- 2. NAVIGASI KE TARGET URL (Login sudah handled) ---
-        // Set timeout navigasi agar tidak nyangkut
-        await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-
         const INPUT_SELECTOR = "input[name='numberrange']";
+        await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 5000 });
         
-        // --- 3. PROSES INPUT RANGE ---
-        await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 10000 });
+        // Bersihkan & Isi Range
         await page.fill(INPUT_SELECTOR, "");
         await page.fill(INPUT_SELECTOR, prefix);
         
-        currentStep = 2; // Input Range Done
+        let currentStep = 2; 
         const BUTTON_SELECTOR = "button:has-text('Get Number')";
-        await page.waitForSelector(BUTTON_SELECTOR, { state: 'visible', timeout: 10000 });
-
+        
+        // Klik sesuai jumlah (Super Fast)
         for (let i = 0; i < clickCount; i++) {
             await page.click(BUTTON_SELECTOR, { force: true });
         }
 
-        currentStep = 3; // Click Done
+        currentStep = 3; 
         await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
-        await new Promise(r => setTimeout(r, 500));
-        currentStep = 4; // Start Search
-        await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-
+        // Delay sangat singkat karena tab sudah standby
         await new Promise(r => setTimeout(r, 1000));
+        currentStep = 4;
+        await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
 
-        const delayRound1 = 5.0;
-        const delayRound2 = 5.0;
-        const checkInterval = 0.25;
         let foundNumbers = [];
-
-        const rounds = [delayRound1, delayRound2];
-
-        for (let rIdx = 0; rIdx < rounds.length; rIdx++) {
-            const duration = rounds[rIdx];
-            if (rIdx === 0) currentStep = 5;
-            else if (rIdx === 1) {
-                if (foundNumbers.length < numToFetch) {
-                    await page.click(BUTTON_SELECTOR, { force: true });
-                    await new Promise(r => setTimeout(r, 1500));
-                    currentStep = 8;
-                }
+        const startTime = Date.now() / 1000;
+        
+        // Loop pencarian cepat
+        while ((Date.now() / 1000 - startTime) < 8.0) { // Timeout pencarian 8 detik
+            foundNumbers = await getAllNumbersParallel(page, numToFetch);
+            if (foundNumbers.length >= numToFetch) {
+                currentStep = 12;
+                break;
             }
-
-            const startTime = Date.now() / 1000;
-            let lastCheck = 0;
-
-            while ((Date.now() / 1000 - startTime) < duration) {
-                const now = Date.now() / 1000;
-                if (now - lastCheck >= checkInterval) {
-                    // PENTING: Pass 'page' ke helper
-                    foundNumbers = await getAllNumbersParallel(page, numToFetch);
-                    lastCheck = now;
-                    if (foundNumbers.length >= numToFetch) {
-                        currentStep = 12;
-                        break;
-                    }
-                }
-
-                // Progress update
-                const elapsedTime = now - startOpTime;
-                const totalEstimated = delayRound1 + delayRound2 + 4;
-                const targetStep = Math.floor(12 * elapsedTime / totalEstimated);
-                if (targetStep > currentStep && targetStep <= 12) {
-                    currentStep = targetStep;
-                    await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
-                }
-                await new Promise(r => setTimeout(r, 50));
+            
+            // Progress Update
+            const elapsed = (Date.now() / 1000) - startOpTime;
+            const targetStep = Math.min(11, Math.floor(elapsed * 1.5) + 4);
+            if (targetStep > currentStep) {
+                currentStep = targetStep;
+                await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
             }
-            if (foundNumbers.length >= numToFetch) break;
+            await new Promise(r => setTimeout(r, 300));
         }
 
         if (!foundNumbers || foundNumbers.length === 0) {
@@ -390,10 +368,9 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         }
 
         const mainCountry = foundNumbers[0].country || "UNKNOWN";
-        currentStep = 12;
-        await tgEdit(userId, msgId, getProgressMessage(currentStep, 0, prefix, numToFetch));
+        await tgEdit(userId, msgId, getProgressMessage(12, 0, prefix, numToFetch));
 
-        // Save Cache & Waitlist
+        // Save Data
         foundNumbers.forEach(entry => {
             saveCache({ number: entry.number, country: entry.country, user_id: userId, time: Date.now() });
             addToWaitList(entry.number, userId, usernameTg, firstNameTg);
@@ -402,13 +379,11 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         lastUsedRange[userId] = prefix;
         const emoji = GLOBAL_COUNTRY_EMOJI[mainCountry] || "🗺️";
         
-        let msg = "";
+        let msg = (numToFetch === 10) ? "✅ The number is already.\n\n<code>" : "✅ The number is ready\n\n";
         if (numToFetch === 10) {
-            msg = "✅ The number is already.\n\n<code>";
             foundNumbers.slice(0, 10).forEach(entry => msg += `${entry.number}\n`);
             msg += "</code>";
         } else {
-            msg = "✅ The number is ready\n\n";
             if (numToFetch === 1) {
                 msg += `📞 Number  : <code>${foundNumbers[0].number}</code>\n`;
             } else {
@@ -416,9 +391,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
                     msg += `📞 Number ${idx+1} : <code>${entry.number}</code>\n`;
                 });
             }
-            msg += `${emoji} COUNTRY : ${mainCountry}\n` +
-                   `🏷️ Range   : <code>${prefix}</code>\n\n` +
-                   `<b>🤖 Number available please use, Waiting for OTP</b>\n`;
+            msg += `${emoji} COUNTRY : ${mainCountry}\n🏷️ Range   : <code>${prefix}</code>\n\n<b>🤖 Number available please use, Waiting for OTP</b>\n`;
         }
 
         const inlineKb = {
@@ -428,29 +401,20 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
                 [{ text: "🔐 OTP Grup", url: GROUP_LINK_1 }, { text: "🌐 Change Range", callback_data: "getnum" }]
             ]
         };
-
         await tgEdit(userId, msgId, msg, inlineKb);
 
     } catch (e) {
-        if (e.name === 'TimeoutError') {
-            if (msgId) await tgEdit(userId, msgId, "❌ Timeout. Web lambat/down. Coba lagi nanti.");
-        } else {
-            if (msgId) await tgEdit(userId, msgId, `❌ Error: ${e.message}`);
-        }
         console.error(`[PROCESS ERROR User ${userId}]`, e);
+        if (msgId) await tgEdit(userId, msgId, `❌ Error: ${e.message}`);
     } finally {
         if (actionInterval) clearInterval(actionInterval);
-        
-        // --- 4. TUTUP PAGE SETELAH SELESAI ---
-        // Ini wajib agar RAM tidak bocor
-        if (page) {
-            try { await page.close(); } catch(e) {}
-        }
+        activeQueueCount--; // Kurangi antrian
+        release(); // Lepas kunci untuk user berikutnya
     }
 }
 
 // ==============================================================================
-// TELEGRAM LOOP (TETAP SAMA, TIDAK BERUBAH)
+// TELEGRAM LOOP
 // ==============================================================================
 
 async function telegramLoop() {
@@ -464,6 +428,12 @@ async function telegramLoop() {
         if (data && data.result) {
             for (const upd of data.result) {
                 offset = upd.update_id + 1;
+                
+                // --- Tambahan Answer Callback agar tidak loading ---
+                if (upd.callback_query) {
+                    try { await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: upd.callback_query.id }); } catch(e){}
+                }
+
                 if (upd.message) {
                     const msg = upd.message;
                     const chatId = msg.chat.id;
@@ -553,7 +523,6 @@ async function telegramLoop() {
                         let menuMsgId = pendingMessage[userId];
                         delete pendingMessage[userId];
                         if (/^\+?\d{3,15}[Xx*#]+$/.test(prefix)) {
-                            if (!menuMsgId) menuMsgId = await tgSend(chatId, getProgressMessage(0, 0, prefix, 10));
                             processUserInput(userId, prefix, 10, usernameTg, firstName, menuMsgId);
                         } else await tgSend(chatId, "❌ Format salah.");
                         continue;
@@ -566,7 +535,6 @@ async function telegramLoop() {
                         let menuMsgId = pendingMessage[userId];
                         delete pendingMessage[userId];
                         if (isManualFormat) {
-                            if (!menuMsgId) menuMsgId = await tgSend(chatId, getProgressMessage(0, 0, prefix, 1));
                             processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
                         } else await tgSend(chatId, "❌ Format salah.");
                         continue;
@@ -607,9 +575,7 @@ async function telegramLoop() {
                         if (await isUserInBothGroups(userId)) {
                             verifiedUsers.add(userId); saveUsers(userId);
                             await tgEdit(chatId, menuMsgId, "✅ Verifikasi Sukses! Ketik /start");
-                        } else {
-                            await tgSend(chatId, "❌ Belum gabung semua grup.");
-                        }
+                        } else { await tgSend(chatId, "❌ Belum gabung semua grup."); }
                         continue;
                     }
                     if (dataCb === "getnum") {
@@ -627,7 +593,6 @@ async function telegramLoop() {
                     }
                     if (dataCb.startsWith("select_range:")) {
                         const prefix = dataCb.split(":")[1];
-                        await tgEdit(chatId, menuMsgId, getProgressMessage(0, 0, prefix, 1));
                         processUserInput(userId, prefix, 1, usernameTg, firstName, menuMsgId);
                         continue;
                     }
@@ -703,28 +668,35 @@ function initializeFiles() {
 }
 
 async function main() {
-    console.log("[INFO] Starting NodeJS Bot (Shared Browser Mode)...");
+    console.log("[INFO] Starting NodeJS Bot (Standby Page & Queue Mode)...");
     initializeFiles();
     
     // --- 1. START SHARED BROWSER ---
     try {
         await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
         console.log("[MAIN] Shared Browser Ready.");
+
+        // --- 2. PREPARE STANDBY PAGE ---
+        mainStandbyPage = await getNewPage();
+        await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
+        console.log("[MAIN] Standby Page Ready.");
+
     } catch (e) {
-        console.error("[FATAL] Gagal Start Browser:", e);
+        console.error("[FATAL] Gagal Start Browser/Standby Page:", e);
         process.exit(1);
     }
 
     const smsProcess = fork('./sms.js', [], { silent: true });
 
-    // CRON: Restart Browser via fungsi shared
+    // CRON: Restart Browser & Re-init Standby Page
     cron.schedule('0 7 * * *', async () => {
         console.log("[CRON] Restarting Browser...");
         await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
+        mainStandbyPage = await getNewPage();
+        await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
     try {
-        // initBrowser() manual tidak dipanggil lagi disini
         await Promise.all([ telegramLoop(), expiryMonitorTask() ]);
     } catch (e) { console.error("[FATAL ERROR]", e); } 
     finally { smsProcess.kill(); }
