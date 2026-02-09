@@ -37,7 +37,8 @@ const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "üè¥‚
 async function getSharedPage() {
     try {
         if (process.env.WS_ENDPOINT) {
-            const browser = await chromium.connectOverCDP(process.env.WS_ENDPOINT);
+            // GUNAKAN chromium.connect BUKAN connectOverCDP
+            const browser = await chromium.connect(process.env.WS_ENDPOINT);
             const context = browser.contexts()[0];
             return await context.newPage();
         } else {
@@ -49,6 +50,7 @@ async function getSharedPage() {
         return null;
     }
 }
+
 
 function getCache() {
     if (fs.existsSync(CACHE_FILE)) {
