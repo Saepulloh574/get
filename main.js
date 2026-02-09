@@ -471,18 +471,15 @@ async function main() {
     
     let subProcesses = [];
 
-    try {
-        const browserInstance = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
-        state.wsEndpoint = browserInstance.wsEndpoint(); 
+    // Contoh perbaikan di main.js
+try {
+    const wsEndpoint = await initSharedBrowser(process.env.EMAIL, process.env.PASSWORD);
+    state.wsEndpoint = wsEndpoint; // Simpan endpointnya
+    console.log(`[INFO] Browser Server aktif di: ${wsEndpoint}`);
+} catch (err) {
+    console.error("[FATAL] Gagal Start Browser:", err);
+}
 
-        mainStandbyPage = await getNewPage();
-        await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'networkidle2' });
-        console.log("[MAIN] Tab 1 (Standby) Ready via Puppeteer.");
-
-        const forkOptions = { 
-            silent: false, 
-            env: { ...process.env, WS_ENDPOINT: state.wsEndpoint } 
-        };
 
         const smsProcess = fork('./sms.js', [], forkOptions);
         const rangeProcess = fork('./range.js', [], forkOptions);
