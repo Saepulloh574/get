@@ -340,6 +340,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         await tgEdit(userId, msgId, getProgressMessage(1, 0, prefix, clickCount));
         actionInterval = setInterval(() => { tgSendAction(userId, "typing"); }, 4500);
         
+        // --- LOGIKA TAB STANDBY (Hanya buka tab baru jika perlu) ---
         if (!mainStandbyPage || mainStandbyPage.isClosed()) {
             mainStandbyPage = await getNewPage();
             await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
@@ -350,7 +351,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         const page = mainStandbyPage;
         const startOpTime = Date.now() / 1000;
         const INPUT_SELECTOR = "input[name='numberrange']";
-        await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 5000 });
+        await page.waitForSelector(INPUT_SELECTOR, { state: 'visible', timeout: 10000 });
         
         await page.fill(INPUT_SELECTOR, ""); 
         await page.fill(INPUT_SELECTOR, prefix); 
@@ -665,50 +666,74 @@ async function expiryMonitorTask() {
 function initializeFiles() {
     [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE].forEach(f => { if (!fs.existsSync(f)) saveJson(f, []); });
     if (!fs.existsSync(PROFILE_FILE)) saveJson(PROFILE_FILE, {});
-    // Pastikan folder helpers ada
     if (!fs.existsSync('./helpers')) fs.mkdirSync('./helpers');
 }
+
+// ==============================================================================
+// MAIN BOOTSTRAP (SINGLE BROWSER, MULTI PROCESS)
+// ==============================================================================
 
 async function main() {
     console.log("[INFO] Starting NodeJS Bot (Professional FIFO Queue System)...");
     initializeFiles();
-    try {
-        const ws = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
-        state.wsEndpoint = ws; // Simpan ke global state
+    
+    let subProcesses = [];
 
+    try {
+        // 1. Jalankan browser utama (Pabrik Browser)
+        const ws = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
+        state.wsEndpoint = ws; 
+        // Simpan browser instance ke state memory supaya bisa dipakai internal main.js
+        // browser-shared.js harus mengupdate state.browser di dalamnya.
+
+        // 2. Main Process ambil Tab 1 (Standby Page)
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL, { waitUntil: 'domcontentloaded' });
-        console.log("[MAIN] Browser & Standby Page Ready.");
-    } catch (e) { console.error("[FATAL] Gagal Start Browser:", e); process.exit(1); }
+        console.log("[MAIN] Tab 1 (Standby) Ready.");
 
-    // --- JALANKAN SEMUA SUB-PROSES DENGAN WS_ENDPOINT ENV ---
-    const forkOptions = { 
-        silent: true, 
-        env: { ...process.env, WS_ENDPOINT: state.wsEndpoint } 
-    };
+        // 3. Spawning Sub-Proses dengan WS_ENDPOINT supaya mereka nempel ke browser yang sama
+        const forkOptions = { 
+            silent: false, 
+            env: { ...process.env, WS_ENDPOINT: state.wsEndpoint } 
+        };
 
-    const smsProcess = fork('./sms.js', [], forkOptions);
-    const rangeProcess = fork('./range.js', [], forkOptions);
-    const messageProcess = fork('./message.js', [], forkOptions);
+        const smsProcess = fork('./sms.js', [], forkOptions);
+        const rangeProcess = fork('./range.js', [], forkOptions);
+        const messageProcess = fork('./message.js', [], forkOptions);
+        
+        subProcesses = [smsProcess, rangeProcess, messageProcess];
+        console.log("[SYSTEM] Sub-processes (sms, range, message) connected to Shared Browser.");
 
-    console.log("[SYSTEM] Sub-processes (sms, range, message) started with shared browser.");
+    } catch (e) { 
+        console.error("[FATAL] Gagal Start Browser:", e); 
+        process.exit(1); 
+    }
 
+    // Cron Restart (Hanya Main yang melakukan restart browser)
     cron.schedule('0 7 * * *', async () => {
+        console.log("[CRON] Restarting Browser...");
         const ws = await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = ws;
+        
+        // Refresh Tab Utama
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL);
+
+        // Sub proses biasanya akan error/close saat browser mati, 
+        // tapi jika script mereka punya auto-reconnect ke WS, mereka akan nyambung lagi.
     }, { scheduled: true, timezone: "Asia/Jakarta" });
+
+    // Handle Closing
+    process.on('SIGINT', () => {
+        console.log("[SYSTEM] Shutting down...");
+        subProcesses.forEach(p => p.kill());
+        process.exit(0);
+    });
 
     try { 
         await Promise.all([ telegramLoop(), expiryMonitorTask() ]); 
     } 
-    catch (e) { console.error("[FATAL ERROR]", e); } 
-    finally { 
-        if(smsProcess) smsProcess.kill(); 
-        if(rangeProcess) rangeProcess.kill(); 
-        if(messageProcess) messageProcess.kill(); 
-    }
+    catch (e) { console.error("[FATAL ERROR LOOP]", e); } 
 }
 
 main();
