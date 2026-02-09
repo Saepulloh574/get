@@ -4,7 +4,6 @@ const path = require('path');
 const { chromium } = require('playwright');
 const { state } = require('./helpers/state'); 
 
-// ==================== KONFIGURASI ====================
 const CONFIG = {
     BOT_TOKEN: "8264103317:AAG_-LZQIxrMDIlLlttWQqIvA9xu_GNMwnc",
     CHAT_ID: "-1003358198353",
@@ -51,14 +50,14 @@ const formatLiveMessage = (rangeVal, count, country, service, msg) => {
            `<blockquote>${escaped}</blockquote>`;
 };
 
-// --- FIX LOGIKA KONEK: PAKSA NUMPANG TAB ---
+// --- FIX KONEKSI: ANTI LAYAR BARU ---
 async function getSharedPage() {
     try {
         const wsAddr = process.env.WS_ENDPOINT || state.wsEndpoint;
         if (wsAddr) {
             const browser = await chromium.connect(wsAddr);
-            // KUNCI: Pakai contexts()[0] agar nempel di jendela lama
             const contexts = browser.contexts();
+            // Paksa numpang di context pertama (milik main.js)
             if (contexts.length > 0) return await contexts[0].newPage();
             return null;
         } 
@@ -67,12 +66,9 @@ async function getSharedPage() {
             if (contexts.length > 0) return await contexts[0].newPage();
             return null;
         } 
-        else {
-            console.error("❌ [RANGE] Tidak ada browser instance yang tersedia.");
-            return null;
-        }
+        return null;
     } catch (e) {
-        console.error("❌ [RANGE] Gagal mendapatkan Page:", e.message);
+        console.error("❌ [RANGE] Gagal numpang tab:", e.message);
         return null;
     }
 }
@@ -90,7 +86,7 @@ const saveToInlineJson = (rangeVal, country, service) => {
         list.push({ range: rangeVal, country: country.toUpperCase(), emoji: getCountryEmoji(country), service: shortS });
         if (list.length > 20) list = list.slice(-20);
         fs.writeFileSync(INLINE_JSON_PATH, JSON.stringify(list, null, 2));
-    } catch (e) { console.error("❌ [RANGE] Save Inline Error"); }
+    } catch (e) {}
 };
 
 async function processQueue() {
@@ -122,9 +118,12 @@ async function processQueue() {
 }
 
 async function monitorTask() {
+    console.log("🚀 [RANGE] Service Background Active (Wait for Browser...)");
+
     const checkState = setInterval(() => {
         if (state.browser || process.env.WS_ENDPOINT) {
             clearInterval(checkState);
+            console.log("✅ [RANGE] Browser Linked. Monitoring Tab Console...");
             runMonitoringLoop();
         }
     }, 5000);
@@ -135,13 +134,20 @@ async function monitorTask() {
             try {
                 if (!page || page.isClosed()) {
                     page = await getSharedPage();
-                    if (!page) { await new Promise(r => setTimeout(r, 5000)); continue; }
+                    if (!page) { 
+                        await new Promise(r => setTimeout(r, 5000)); 
+                        continue; 
+                    }
                     await page.route('**/*.{png,jpg,jpeg,gif,svg}', r => r.abort());
                 }
-                if (!page.url().includes('/console')) await page.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+
+                if (!page.url().includes('/console')) {
+                    await page.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+                }
 
                 const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
                 await page.waitForSelector(CONSOLE_SELECTOR, { timeout: 15000 }).catch(() => {});
+                
                 const elements = await page.locator(CONSOLE_SELECTOR).all();
 
                 for (const el of elements) {
@@ -150,7 +156,8 @@ async function monitorTask() {
                         const country = rawC.includes("•") ? rawC.split("•")[1].trim() : "Unknown";
                         if (CONFIG.BANNED_COUNTRIES.includes(country.toLowerCase())) continue;
 
-                        const service = cleanServiceName(await el.locator(".text-blue-400").innerText());
+                        const sRaw = await el.locator(".flex-grow.min-w-0 .text-xs.font-bold.text-blue-400").innerText();
+                        const service = cleanServiceName(sRaw);
                         if (!CONFIG.ALLOWED_SERVICES.some(s => service.toLowerCase().includes(s))) continue;
 
                         const phone = cleanPhoneNumber(await el.locator(".font-mono").last().innerText());
@@ -161,15 +168,19 @@ async function monitorTask() {
                             if (!CACHE_SET.has(cacheKey)) {
                                 CACHE_SET.add(cacheKey);
                                 const cur = SENT_MESSAGES.get(phone) || { count: 0 };
-                                MESSAGE_QUEUE.push({ rangeVal: phone, country, service, count: cur.count + 1, text: formatLiveMessage(phone, cur.count + 1, country, service, fullMessage) });
+                                MESSAGE_QUEUE.push({ 
+                                    rangeVal: phone, country, service, count: cur.count + 1, 
+                                    text: formatLiveMessage(phone, cur.count + 1, country, service, fullMessage) 
+                                });
                                 processQueue();
                             }
                         }
                     } catch (e) {}
                 }
-            } catch (err) { if (page) await page.close().catch(() => {}); page = null; }
+            } catch (err) { page = null; }
             await new Promise(r => setTimeout(r, 15000));
         }
     }
 }
+
 monitorTask();
