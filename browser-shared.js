@@ -19,9 +19,10 @@ async function initSharedBrowser(email, password) {
         
         // KUNCI: Pakai launchServer agar wsEndpoint tersedia
         browserServer = await chromium.launchServer({
-            headless: HEADLESS_CONFIG.headless,
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
-        });
+    headless: HEADLESS_CONFIG.headless,
+    handleSIGINT: false, // Tambahkan ini agar server gak mati saat main.js restart
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+});
 
         wsEndpoint = browserServer.wsEndpoint();
         console.log(`[SHARED-BROWSER] WS Endpoint: ${wsEndpoint}`);
