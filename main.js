@@ -285,7 +285,6 @@ async function getAllNumbersParallel(page, numToFetch) {
     const currentNumbers = [];
     const seen = new Set();
     
-    // Di Puppeteer, iterasi manual row lebih stabil daripada Promise.all pada selector dinamis
     for (let i = 1; i <= numToFetch + 5; i++) {
         const res = await getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page);
         if (res && res.number && !seen.has(res.number)) {
@@ -339,7 +338,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         
         await page.waitForSelector(INPUT_SELECTOR, { visible: true, timeout: 10000 });
         
-        // Clear input (Puppeteer style)
         await page.click(INPUT_SELECTOR, { clickCount: 3 });
         await page.keyboard.press('Backspace');
         await page.type(INPUT_SELECTOR, prefix); 
@@ -413,7 +411,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 }
 
 // ==============================================================================
-// TELEGRAM LOOP & TASKS (TETAP SAMA)
+// TELEGRAM LOOP & TASKS
 // ==============================================================================
 
 async function telegramLoop() {
@@ -427,13 +425,7 @@ async function telegramLoop() {
         if (data && data.result) {
             for (const upd of data.result) {
                 offset = upd.update_id + 1;
-                // --- Logika Pesan & Callback Tetap Sama ---
-                // (Sesuai script original anda agar fitur tidak berubah)
-                // ... (logic start, verify, getnum, manual_range, dll) ...
-                
-                // Note: Karena script ini panjang, saya asumsikan bagian loop telegram 
-                // anda copy paste dari script original anda tanpa perubahan selector 
-                // karena tidak berhubungan langsung dengan browser engine.
+                // Logika Telegram di sini...
             }
         }
         await new Promise(r => setTimeout(r, 300)); 
@@ -462,7 +454,7 @@ function initializeFiles() {
 }
 
 // ==============================================================================
-// MAIN BOOTSTRAP
+// MAIN BOOTSTRAP (FIXED)
 // ==============================================================================
 
 async function main() {
@@ -470,28 +462,27 @@ async function main() {
     initializeFiles();
     
     let subProcesses = [];
+    const forkOptions = { stdio: 'inherit' };
 
-    // Contoh perbaikan di main.js
-try {
-    const wsEndpoint = await initSharedBrowser(process.env.EMAIL, process.env.PASSWORD);
-    state.wsEndpoint = wsEndpoint; // Simpan endpointnya
-    console.log(`[INFO] Browser Server aktif di: ${wsEndpoint}`);
-} catch (err) {
-    console.error("[FATAL] Gagal Start Browser:", err);
-}
+    try {
+        // Init Shared Browser
+        const wsEndpoint = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
+        state.wsEndpoint = wsEndpoint;
+        console.log(`[INFO] Browser Server aktif di: ${wsEndpoint}`);
 
-
+        // Forking sub-processes
         const smsProcess = fork('./sms.js', [], forkOptions);
         const rangeProcess = fork('./range.js', [], forkOptions);
         const messageProcess = fork('./message.js', [], forkOptions);
         
         subProcesses = [smsProcess, rangeProcess, messageProcess];
 
-    } catch (e) { 
-        console.error("[FATAL] Gagal Start Browser:", e); 
+    } catch (err) {
+        console.error("[FATAL] Gagal Start Browser:", err);
         process.exit(1); 
     }
 
+    // Cron setup
     cron.schedule('0 7 * * *', async () => {
         const ws = await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = ws;
@@ -499,14 +490,18 @@ try {
         await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
+    // Handle process exit
     process.on('SIGINT', () => {
         subProcesses.forEach(p => p.kill());
         process.exit(0);
     });
 
+    // Run core tasks
     try { 
         await Promise.all([ telegramLoop(), expiryMonitorTask() ]); 
-    } catch (e) { } 
+    } catch (e) { 
+        console.error("[ERROR] Task Error:", e);
+    } 
 }
 
 main();
