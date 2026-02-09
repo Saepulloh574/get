@@ -33,17 +33,17 @@ let monitorPage = null;
 const escapeHtml = (text) => (text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "");
 const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "🏴‍☠️");
 
-// --- FUNGSI AMBIL PAGE (SUPPORT SHARED STATE & WS) ---
 async function getSharedPage() {
     try {
-        if (state && state.browser) {
-            const contexts = state.browser.contexts();
-            const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
+        const wsAddr = process.env.WS_ENDPOINT || state.wsEndpoint;
+        if (wsAddr) {
+            const browser = await chromium.connect(wsAddr);
+            const context = browser.contexts()[0] || await browser.newContext();
             return await context.newPage();
         } 
-        else if (process.env.WS_ENDPOINT) {
-            const browser = await chromium.connect(process.env.WS_ENDPOINT);
-            const context = browser.contexts()[0] || await browser.newContext();
+        else if (state && state.browser) {
+            const contexts = state.browser.contexts();
+            const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
             return await context.newPage();
         } 
         else {
@@ -51,7 +51,7 @@ async function getSharedPage() {
             return null;
         }
     } catch (e) {
-        console.error("❌ [MESSAGE] Gagal mendapatkan Page:", e.message);
+        console.error("❌ [MESSAGE] Gagal numpang tab:", e.message);
         return null;
     }
 }
@@ -121,8 +121,6 @@ async function sendTelegram(text, otpCode = null, targetChat = CHAT_ID) {
     try { await axios.post(url, payload); } catch (e) { console.error(`❌ [MESSAGE] TG Error`); }
 }
 
-// ==================== MONITORING LOGIC ====================
-
 async function startSmsMonitor() {
     console.log("🚀 [MESSAGE] SMS Monitor Service Starting...");
 
@@ -143,7 +141,6 @@ async function startSmsMonitor() {
                         await new Promise(r => setTimeout(r, 5000));
                         continue;
                     }
-                    // Gak butuh gambar untuk monitor API
                     await monitorPage.route('**/*.{png,jpg,jpeg,gif,svg}', route => route.abort());
                 }
 
@@ -151,10 +148,7 @@ async function startSmsMonitor() {
                     await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
                 }
 
-                // --- INTERSEPSI API INFO ---
                 const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 15000 }).catch(() => null);
-                
-                // Klik header untuk maksa StexSMS panggil API /getnum/info
                 await monitorPage.click('th:has-text("Number Info")', { force: true }).catch(() => {});
                 
                 const response = await responsePromise;
@@ -163,7 +157,6 @@ async function startSmsMonitor() {
                     const numbers = json?.data?.numbers || [];
 
                     for (const item of numbers) {
-                        // Cek status success dan ada pesan
                         if (item.status === 'success' && item.message) {
                             const otp = extractOtp(item.message);
                             const phone = "+" + item.number;
@@ -173,8 +166,6 @@ async function startSmsMonitor() {
                             if (otp && !cache[key]) {
                                 cache[key] = { t: Date.now() };
                                 saveToCache(cache);
-
-                                console.log(`✨ [MESSAGE] OTP FOUND: ${otp} | ${phone}`);
 
                                 const user = getUserData(phone);
                                 const userTag = user.username !== "unknown" ? user.username : "User";
@@ -189,7 +180,6 @@ async function startSmsMonitor() {
                                             `<b>FULL MESSAGE:</b>\n` +
                                             `<blockquote>${escapeHtml(item.message)}</blockquote>`;
                                 
-                                // Kirim ke grup dan ke User jika ID ketemu
                                 await sendTelegram(msg, otp);
                                 if (user.user_id) {
                                     await sendTelegram(msg, otp, user.user_id);
@@ -204,12 +194,10 @@ async function startSmsMonitor() {
                     }
                 }
             } catch (e) {
-                console.error(`❌ [MESSAGE] Loop Error: ${e.message}`);
                 if (monitorPage) await monitorPage.close().catch(() => {});
                 monitorPage = null;
                 await new Promise(r => setTimeout(r, 10000));
             }
-            // Delay 8 detik antar request biar gak kena limit Cloudflare StexSMS
             await new Promise(r => setTimeout(r, 8000)); 
         }
     }
