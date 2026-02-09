@@ -37,20 +37,26 @@ const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "🏴�
 async function getSharedPage() {
     try {
         if (process.env.WS_ENDPOINT) {
-            // GUNAKAN chromium.connect BUKAN connectOverCDP
+            // Konek ke Browser Server
             const browser = await chromium.connect(process.env.WS_ENDPOINT);
-            const context = browser.contexts()[0];
+            
+            // Cek apakah sudah ada context, jika tidak ada (kosong), buat baru
+            let context = browser.contexts()[0];
+            if (!context) {
+                context = await browser.newContext();
+            }
+            
             return await context.newPage();
         } else {
+            // Fallback jika dijalankan manual
             const { getNewPage } = require('./browser-shared');
             return await getNewPage();
         }
     } catch (e) {
-        console.error("❌ [MESSAGE] Gagal mendapatkan Page:", e.message);
+        console.error("❌ Gagal mendapatkan Page:", e.message);
         return null;
     }
 }
-
 
 function getCache() {
     if (fs.existsSync(CACHE_FILE)) {
