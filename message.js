@@ -1,7 +1,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
+const puppeteer = require('puppeteer-core'); // Berubah dari playwright ke puppeteer-core
 
 // Mengambil state global agar berbagi instance browser dengan main process
 const { state } = require('./helpers/state'); 
@@ -33,32 +33,28 @@ let monitorPage = null;
 const escapeHtml = (text) => (text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "");
 const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "🏴‍☠️");
 
-// --- FIX LOGIKA KONEK: PAKSA NUMPANG TAB ---
+// --- FIX LOGIKA KONEK: PUPPETEER VERSION ---
 async function getSharedPage() {
     try {
         const wsAddr = process.env.WS_ENDPOINT || state.wsEndpoint;
         if (wsAddr) {
-            const browser = await chromium.connect(wsAddr);
-            // KUNCI: Paksa ambil context ke-0, jangan pernah buat newContext()
-            const contexts = browser.contexts();
-            if (contexts.length > 0) {
-                return await contexts[0].newPage(); 
-            }
-            return null;
-        } 
-        else if (state && state.browser) {
-            const contexts = state.browser.contexts();
-            if (contexts.length > 0) {
-                return await contexts[0].newPage();
-            }
-            return null;
+            // Puppeteer connect
+            const browser = await puppeteer.connect({ browserWSEndpoint: wsAddr });
+            
+            // Di Puppeteer tidak ada 'contexts', semua page berbagi session yang sama
+            const page = await browser.newPage();
+            
+            // Set User Agent agar konsisten
+            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36');
+            
+            return page;
         } 
         else {
-            console.error("❌ [MESSAGE] Browser instance tidak ditemukan.");
+            console.error("❌ [MESSAGE] Browser WS Endpoint tidak ditemukan.");
             return null;
         }
     } catch (e) {
-        console.error("❌ [MESSAGE] Gagal numpang tab:", e.message);
+        console.error("❌ [MESSAGE] Gagal konek browser:", e.message);
         return null;
     }
 }
@@ -129,12 +125,12 @@ async function sendTelegram(text, otpCode = null, targetChat = CHAT_ID) {
 }
 
 async function startSmsMonitor() {
-    console.log("🚀 [MESSAGE] SMS Monitor Service Starting...");
+    console.log("🚀 [MESSAGE] SMS Monitor Service Starting (Puppeteer)...");
 
     const checkState = setInterval(() => {
-        if (state.browser || process.env.WS_ENDPOINT) {
+        if (process.env.WS_ENDPOINT || state.wsEndpoint) {
             clearInterval(checkState);
-            console.log("✅ [MESSAGE] Browser Linked. Monitoring OTP on Tab 3...");
+            console.log("✅ [MESSAGE] Browser Linked. Monitoring OTP...");
             runMonitoringLoop();
         }
     }, 5000);
@@ -148,15 +144,27 @@ async function startSmsMonitor() {
                         await new Promise(r => setTimeout(r, 5000));
                         continue;
                     }
-                    await monitorPage.route('**/*.{png,jpg,jpeg,gif,svg}', route => route.abort());
+                    // Request interception untuk blokir gambar (Puppeteer style)
+                    await monitorPage.setRequestInterception(true);
+                    monitorPage.on('request', (req) => {
+                        if (['image', 'stylesheet', 'font'].includes(req.resourceType())) req.abort();
+                        else req.continue();
+                    });
                 }
 
                 if (!monitorPage.url().includes('/getnum')) {
-                    await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+                    await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 }).catch(() => {});
                 }
 
+                // Logic Monitoring via Fetch/Response
                 const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 15000 }).catch(() => null);
-                await monitorPage.click('th:has-text("Number Info")', { force: true }).catch(() => {});
+                
+                // Trigger refresh data dengan klik header tabel (XPath/Selector Puppeteer)
+                await monitorPage.evaluate(() => {
+                    const headers = Array.from(document.querySelectorAll('th'));
+                    const target = headers.find(h => h.textContent.includes('Number Info'));
+                    if (target) target.click();
+                }).catch(() => {});
                 
                 const response = await responsePromise;
                 if (response) {
