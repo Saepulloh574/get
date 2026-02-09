@@ -1,7 +1,6 @@
 module.exports = {
     state: {
-        browser: null,
-        context: null,
+        browser: null, // Ini akan menampung instance browser utama
         wsEndpoint: null
     }
 };
