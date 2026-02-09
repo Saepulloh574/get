@@ -81,7 +81,7 @@ async function processQueue() {
             }
             const res = await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/sendMessage`, {
                 chat_id: CONFIG.CHAT_ID, text: item.text, parse_mode: 'HTML',
-                reply_markup: { inline_keyboard: [[{ text: "📞 Get Number", url: "https://t.me/myzuraisgoodbot?start=ZuraBot" }]] }
+                reply_markup: { inline_keyboard: [[{ text: "📞 Get Number", url: "https://t.me/newgettbot" }]] }
             });
             if (res.data.ok) {
                 SENT_MESSAGES.set(item.rangeVal, { message_id: res.data.result.message_id, count: item.count, timestamp: Date.now() });
