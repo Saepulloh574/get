@@ -48,6 +48,7 @@ const INLINE_RANGE_FILE = "inline.json";
 const WAIT_FILE = "wait.json";
 const AKSES_GET10_FILE = "aksesget10.json";
 const PROFILE_FILE = "profile.json";
+const SETTINGS_FILE = "settings.json"; // Tambahan file settings
 
 // --- STATE ANTRIAN REAL FIFO & STANDBY PAGE ---
 const queueMutex = new Mutex();
@@ -411,16 +412,14 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 }
 
 // ==============================================================================
-// TELEGRAM LOOP & TASKS (INI YANG GUE PERBAIKI LOGICNYA SESUAI PERMINTAAN)
+// TELEGRAM LOOP & TASKS
 // ==============================================================================
 
 async function telegramLoop() {
     verifiedUsers = loadUsers();
     
-    // --- CLEAR OLD MESSAGES LOGIC ---
     console.log("[TELEGRAM] Cleaning old updates...");
     let offset = 0;
-    // Set offset -1 to acknowledge all previous messages
     let initUpdates = await axios.get(`${API}/getUpdates`, { params: { offset: -1 } });
     if(initUpdates.data.result.length > 0) {
         offset = initUpdates.data.result[0].update_id + 1;
@@ -449,7 +448,24 @@ async function telegramLoop() {
                         saveUsers(uid);
                         getUserProfile(uid, firstName);
 
-                        // CEK JOIN GRUP (Memakai fungsi asli isUserInBothGroups)
+                        // --- COMMAND KHUSUS ADMIN (/stopbalance & /startbalance) ---
+                        if (uid === ADMIN_ID) {
+                            if (text === "/stopbalance") {
+                                const settings = loadJson(SETTINGS_FILE, { balance_enabled: true });
+                                settings.balance_enabled = false;
+                                saveJson(SETTINGS_FILE, settings);
+                                await tgSend(uid, "🛑 <b>Balance Dinonaktifkan Global.</b>");
+                                continue;
+                            } else if (text === "/startbalance") {
+                                const settings = loadJson(SETTINGS_FILE, { balance_enabled: true });
+                                settings.balance_enabled = true;
+                                saveJson(SETTINGS_FILE, settings);
+                                await tgSend(uid, "✅ <b>Balance Diaktifkan Kembali.</b>");
+                                continue;
+                            }
+                        }
+
+                        // CEK JOIN GRUP
                         const inGroups = await isUserInBothGroups(uid);
                         if (!inGroups && uid !== ADMIN_ID) {
                              await tgSend(uid, `⚠️ <b>Akses Ditolak</b>\nSilahkan join grup terlebih dahulu:\n1. <a href="${GROUP_LINK_1}">Grup 1</a>`);
@@ -463,7 +479,6 @@ async function telegramLoop() {
                         } 
                         else if (manualRangeInput.has(uid)) {
                             manualRangeInput.delete(uid);
-                            // Panggil fungsi utama processUserInput
                             await processUserInput(uid, text, 1, username, firstName);
                         }
                     }
@@ -475,7 +490,6 @@ async function telegramLoop() {
                         const username = cb.from.username;
                         const firstName = cb.from.first_name;
 
-                        // Answer Callback biar loading ilang
                         await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: cb.id });
 
                         if (data === 'manual_range') {
@@ -495,7 +509,6 @@ async function telegramLoop() {
                             const parts = data.split(':');
                             const count = parseInt(parts[1]);
                             const prefix = parts[2];
-                            // Pass message_id biar bisa diedit langsung
                             await processUserInput(uid, prefix, count, username, firstName, cb.message.message_id);
                         }
                     }
@@ -527,10 +540,12 @@ async function expiryMonitorTask() {
 function initializeFiles() {
     [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE].forEach(f => { if (!fs.existsSync(f)) saveJson(f, []); });
     if (!fs.existsSync(PROFILE_FILE)) saveJson(PROFILE_FILE, {});
+    // Inisialisasi settings.json jika belum ada
+    if (!fs.existsSync(SETTINGS_FILE)) saveJson(SETTINGS_FILE, { balance_enabled: true });
 }
 
 // ==============================================================================
-// MAIN BOOTSTRAP (FIXED)
+// MAIN BOOTSTRAP
 // ==============================================================================
 
 async function main() {
@@ -541,12 +556,10 @@ async function main() {
     const forkOptions = { stdio: 'inherit' };
 
     try {
-        // Init Shared Browser
         const wsEndpoint = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = wsEndpoint;
         console.log(`[INFO] Browser Server aktif di: ${wsEndpoint}`);
 
-        // Forking sub-processes
         const smsProcess = fork('./sms.js', [], forkOptions);
         const rangeProcess = fork('./range.js', [], forkOptions);
         const messageProcess = fork('./message.js', [], forkOptions);
@@ -558,7 +571,6 @@ async function main() {
         process.exit(1); 
     }
 
-    // Cron setup
     cron.schedule('0 7 * * *', async () => {
         const ws = await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = ws;
@@ -566,13 +578,11 @@ async function main() {
         await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
-    // Handle process exit
     process.on('SIGINT', () => {
         subProcesses.forEach(p => p.kill());
         process.exit(0);
     });
 
-    // Run core tasks
     try { 
         await Promise.all([ telegramLoop(), expiryMonitorTask() ]); 
     } catch (e) { 
