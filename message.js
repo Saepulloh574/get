@@ -1,14 +1,13 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-// --- MENGGUNAKAN SHARED BROWSER ---
-const { getNewPage } = require('./browser-shared'); 
+const { chromium } = require('playwright');
 
-// ================= KONFIGURASI =================
+// ==================== KONFIGURASI ====================
 const BOT_TOKEN = "7562117237:AAFQnb5aCmeSHHi_qAJz3vkoX4HbNGohe38";
 const CHAT_ID = "-1003492226491"; 
 const ADMIN_ID = "7184123643";
-const TELEGRAM_BOT_LINK = "https://t.me/newgettbot";
+const TELEGRAM_BOT_LINK = "https://t.me/myzuraisgoodbot"; // Sesuaikan dengan bot utama
 const TELEGRAM_ADMIN_LINK = "https://t.me/Imr1d";
 
 const DASHBOARD_URL = "https://stexsms.com/mdashboard/getnum";
@@ -29,10 +28,27 @@ let lastUpdateId = 0;
 const startTime = Date.now();
 let monitorPage = null;
 
-// ================= UTILS =================
+// ==================== UTILS ====================
 
 const escapeHtml = (text) => (text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "");
 const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "🏴‍☠️");
+
+// --- FUNGSI AMBIL PAGE (SUPPORT MULTI-PROCESS / CDP) ---
+async function getSharedPage() {
+    try {
+        if (process.env.WS_ENDPOINT) {
+            const browser = await chromium.connectOverCDP(process.env.WS_ENDPOINT);
+            const context = browser.contexts()[0];
+            return await context.newPage();
+        } else {
+            const { getNewPage } = require('./browser-shared');
+            return await getNewPage();
+        }
+    } catch (e) {
+        console.error("❌ [MESSAGE] Gagal mendapatkan Page:", e.message);
+        return null;
+    }
+}
 
 function getCache() {
     if (fs.existsSync(CACHE_FILE)) {
@@ -42,7 +58,6 @@ function getCache() {
 }
 
 function saveToCache(cache) {
-    // Bersihkan cache jika terlalu besar (> 500 entry) agar file tidak bengkak
     const keys = Object.keys(cache);
     if (keys.length > 500) {
         const newCache = {};
@@ -68,6 +83,7 @@ function getUserData(phoneNumber) {
 
 function extractOtp(text) {
     if (!text) return null;
+    // Pattern yang lebih kuat untuk OTP FB/WA
     const patterns = [/(\d{3}[\s-]\d{3})/, /(?:code|otp|kode)[:\s]*([\d\s-]+)/i, /\b(\d{4,8})\b/];
     for (const p of patterns) {
         const m = text.match(p);
@@ -92,53 +108,38 @@ async function sendTelegram(text, otpCode = null, targetChat = CHAT_ID) {
     if (otpCode) {
         payload.reply_markup = {
             inline_keyboard: [
-                [{ text: ` Copy OTP: ${otpCode}`, copy_text: { text: otpCode } }, { text: "🎭 Owner", url: TELEGRAM_ADMIN_LINK }],
+                [{ text: `📑 Copy OTP: ${otpCode}`, callback_data: `copy_${otpCode}` }, { text: "🎭 Owner", url: TELEGRAM_ADMIN_LINK }],
                 [{ text: "📞 Get Number", url: TELEGRAM_BOT_LINK }]
             ]
         };
     }
-    try { await axios.post(url, payload); } catch (e) { console.error(`❌ [MESSAGE] TG Error: ${e.message}`); }
+    try { await axios.post(url, payload); } catch (e) { console.error(`❌ [MESSAGE] TG Error`); }
 }
 
-// ================= COMMAND HANDLERS =================
-
-async function checkTelegramCommands() {
-    try {
-        const resp = await axios.get(`https://api.telegram.org/bot${BOT_TOKEN}/getUpdates?offset=${lastUpdateId + 1}&timeout=1`);
-        if (resp.data?.result) {
-            for (const u of resp.data.result) {
-                lastUpdateId = u.update_id;
-                const m = u.message;
-                if (!m || String(m.from.id) !== String(ADMIN_ID)) continue;
-
-                if (m.text === "/status") {
-                    const uptime = Math.floor((Date.now() - startTime) / 1000);
-                    const msg = `🤖 <b>Zura Message Status</b>\n⚡ Live: ✅\nUptime: <code>${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}m</code>\nTotal OTP: <b>${totalSent}</b>`;
-                    await sendTelegram(msg, null, ADMIN_ID);
-                }
-            }
-        }
-    } catch (e) {}
-}
-
-// ================= MONITORING LOGIC =================
+// ==================== MONITORING LOGIC ====================
 
 async function startSmsMonitor() {
-    console.log("🟢 [MESSAGE] Service Background Active (API Intercept Mode).");
+    console.log("🟢 [MESSAGE] Service Background Active (Shared Mode).");
 
     while (true) {
         try {
             if (!monitorPage || monitorPage.isClosed()) {
-                monitorPage = await getNewPage();
-                console.log("[MESSAGE] Tab baru berhasil dibuat.");
+                monitorPage = await getSharedPage();
+                if (!monitorPage) {
+                    await new Promise(r => setTimeout(r, 5000));
+                    continue;
+                }
             }
 
             if (!monitorPage.url().includes('/getnum')) {
-                await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded' });
+                await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
             }
 
-            // Pemicu refresh data dengan cara halus (intersepsi API)
-            const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 5000 }).catch(() => null);
+            // --- INTERSEPSI API INFO ---
+            // Kita memantau traffic network untuk mencari data "/getnum/info"
+            const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 10000 }).catch(() => null);
+            
+            // Trigger refresh dengan klik header tabel secara simulasi
             await monitorPage.click('th:has-text("Number Info")', { force: true }).catch(() => {});
             
             const response = await responsePromise;
@@ -147,21 +148,21 @@ async function startSmsMonitor() {
                 const numbers = json?.data?.numbers || [];
 
                 for (const item of numbers) {
-                    // Cek status dan pesan
+                    // Cek jika ada pesan sukses dan ada isinya
                     if (item.status === 'success' && item.message) {
                         const otp = extractOtp(item.message);
                         const phone = "+" + item.number;
-                        const key = `${otp}_${phone}`;
+                        const key = `${otp}_${phone}`; // Gabungan OTP dan HP agar unik
                         const cache = getCache();
 
                         if (otp && !cache[key]) {
                             cache[key] = { t: Date.now() };
                             saveToCache(cache);
 
-                            console.log(`✨ [MESSAGE] OTP Found: ${otp} for ${phone}`);
+                            console.log(`✨ [MESSAGE] New OTP: ${otp} for ${phone}`);
 
                             const user = getUserData(phone);
-                            const userTag = user.username !== "unknown" ? `@${user.username}` : "unknown";
+                            const userTag = user.username !== "unknown" ? user.username : "User";
                             const emoji = getCountryEmoji(item.country || "");
                             
                             const msg = `💭 <b>New Message Received</b>\n\n` +
@@ -176,7 +177,7 @@ async function startSmsMonitor() {
                             await sendTelegram(msg, otp);
                             totalSent++;
 
-                            // Simpan log lokal
+                            // Log ke smc.json
                             let log = [];
                             if (fs.existsSync(SMC_JSON_FILE)) try { log = JSON.parse(fs.readFileSync(SMC_JSON_FILE)); } catch(e){}
                             log.push({ service: item.full_number, number: phone, otp, message: item.message, time: new Date().toLocaleString() });
@@ -189,12 +190,11 @@ async function startSmsMonitor() {
             console.error(`❌ [MESSAGE] Loop Error: ${e.message}`);
             if (monitorPage) await monitorPage.close().catch(() => {});
             monitorPage = null;
+            await new Promise(r => setTimeout(r, 10000));
         }
         
-        await checkTelegramCommands();
-        await new Promise(r => setTimeout(r, 8000)); // Cek setiap 8 detik
+        await new Promise(r => setTimeout(r, 8000)); // Scan setiap 8 detik agar tidak terlalu berat
     }
 }
 
-// Langsung eksekusi karena di-fork oleh main.js
 startSmsMonitor();
