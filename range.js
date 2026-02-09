@@ -4,7 +4,6 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 // Mengambil state global agar berbagi instance browser dengan main process
-// Pastikan file helpers/state.js sudah lu buat
 const { state } = require('./helpers/state'); 
 
 // ==================== KONFIGURASI ====================
@@ -59,19 +58,17 @@ const formatLiveMessage = (rangeVal, count, country, service, msg) => {
 // --- FUNGSI AMBIL PAGE (SUPPORT SHARED STATE & WS) ---
 async function getSharedPage() {
     try {
-        // 1. Coba ambil dari Shared State (Satu Memory/Proses)
         if (state && state.browser) {
             const contexts = state.browser.contexts();
             const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
             return await context.newPage();
         } 
-        // 2. Coba ambil dari WS_ENDPOINT (Jika pakai Child Process Fork)
         else if (process.env.WS_ENDPOINT) {
+            // Menggunakan connectOverCDP jika memungkinkan atau connect biasa
             const browser = await chromium.connect(process.env.WS_ENDPOINT);
             const context = browser.contexts()[0] || await browser.newContext();
             return await context.newPage();
         } 
-        // 3. Fallback jika semua gagal
         else {
             console.error("❌ [RANGE] Tidak ada browser instance yang tersedia.");
             return null;
@@ -137,13 +134,12 @@ async function processQueue() {
 
 // ==================== MONITOR LOGIC ====================
 async function monitorTask() {
-    console.log("🚀 [RANGE] Menunggu browser aktif dari proses utama...");
+    console.log("🚀 [RANGE] Service Background Active (Shared Tab Mode).");
 
-    // Polling untuk menunggu state.browser terisi (kayak script temen lu)
     const checkState = setInterval(async () => {
         if (state.browser || process.env.WS_ENDPOINT) {
             clearInterval(checkState);
-            console.log("✅ [RANGE] Browser terdeteksi. Memulai monitoring...");
+            console.log("✅ [RANGE] Browser terdeteksi. Memulai monitoring Tab Console...");
             runMonitoringLoop();
         }
     }, 5000);
@@ -158,14 +154,17 @@ async function monitorTask() {
                         await new Promise(r => setTimeout(r, 5000));
                         continue;
                     }
+                    // Optimasi: Blokir gambar biar tab ini gak boros RAM
+                    await page.route('**/*.{png,jpg,jpeg,gif,svg}', route => route.abort());
                 }
 
                 if (!page.url().includes('/console')) {
                     await page.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
                 }
 
+                // Selector Dashboard Console StexSMS
                 const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
-                await page.waitForSelector(CONSOLE_SELECTOR, { timeout: 10000 }).catch(() => {});
+                await page.waitForSelector(CONSOLE_SELECTOR, { timeout: 15000 }).catch(() => {});
                 
                 const elements = await page.locator(CONSOLE_SELECTOR).all();
 
@@ -211,6 +210,7 @@ async function monitorTask() {
                     } catch (e) { continue; }
                 }
 
+                // Cleanup data lama setiap loop
                 const now = Date.now();
                 for (let [r, v] of SENT_MESSAGES.entries()) {
                     if (now - v.timestamp > 1800000) SENT_MESSAGES.delete(r);
@@ -222,6 +222,7 @@ async function monitorTask() {
                 page = null;
                 await new Promise(r => setTimeout(r, 10000));
             }
+            // Scan setiap 15 detik agar tidak membebani browser utama
             await new Promise(r => setTimeout(r, 15000));
         }
     }
