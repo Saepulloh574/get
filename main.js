@@ -9,7 +9,7 @@ const { Mutex } = require('async-mutex');
 // --- STATE MANAGEMENT ---
 const { state } = require('./helpers/state');
 
-// --- IMPORT SHARED BROWSER (Sekarang menggunakan Puppeteer) ---
+// --- IMPORT SHARED BROWSER ---
 const { initSharedBrowser, getNewPage, restartBrowser } = require('./browser-shared.js');
 
 // Load Env
@@ -66,7 +66,6 @@ let waitingDanaInput = new Set();
 let pendingMessage = {};
 let lastUsedRange = {};
 
-// Progress Bar Config
 const MAX_BAR_LENGTH = 12;
 const FILLED_CHAR = "█";
 const EMPTY_CHAR = "░";
@@ -230,6 +229,7 @@ async function tgSendAction(chatId, action = "typing") {
 async function tgGetUpdates(offset) {
     try { const res = await axios.get(`${API}/getUpdates`, { params: { offset: offset, timeout: 5 } }); return res.data; } catch (e) { return { ok: false, result: [] }; }
 }
+
 async function isUserInBothGroups(userId) {
     const check = async (gid) => {
         try {
@@ -241,42 +241,20 @@ async function isUserInBothGroups(userId) {
     return g1 && g2;
 }
 
-async function tgBroadcast(messageText, adminId) {
-    const userIds = Array.from(loadUsers());
-    let success = 0, fail = 0;
-    let adminMsgId = await tgSend(adminId, `🔄 Siaran ke **${userIds.length}** pengguna...`);
-    for (let i = 0; i < userIds.length; i++) {
-        const uid = userIds[i];
-        if (i % 10 === 0 && adminMsgId) await tgEdit(adminId, adminMsgId, `🔄 Siaran: **${i}/${userIds.length}** (Sukses: ${success}, Gagal: ${fail})`);
-        const res = await axios.post(`${API}/sendMessage`, { chat_id: uid, text: messageText, parse_mode: "HTML" }).catch(e => null);
-        if (res && res.data.ok) success++; else fail++;
-        await new Promise(r => setTimeout(r, 50));
-    }
-    const report = `✅ Siaran Selesai!\n🟢 Sukses: <b>${success}</b>\n🔴 Gagal: <b>${fail}</b>`;
-    if (adminMsgId) await tgEdit(adminId, adminMsgId, report); else await tgSend(adminId, report);
-}
-
 // ==============================================================================
-// BROWSER HELPERS (CONVERTED TO PUPPETEER)
+// BROWSER HELPERS & CORE LOGIC
 // ==============================================================================
 
 async function getNumberAndCountryFromRow(rowSelector, page) {
     try {
         const row = await page.$(rowSelector);
         if (!row) return null;
-
-        // Ambil nomor telpon
         const numberRaw = await page.$eval(`${rowSelector} td:nth-child(1) span.font-mono`, el => el.innerText.trim()).catch(() => null);
         const number = numberRaw ? normalizeNumber(numberRaw) : null;
         if (!number || isInCache(number)) return null;
-
-        // Ambil status
         const statusText = await page.$eval(`${rowSelector} td:nth-child(1) div:nth-child(2) span`, el => el.innerText.trim().toLowerCase()).catch(() => "unknown");
         if (statusText.includes("success") || statusText.includes("failed")) return null;
-
-        // Ambil negara
         const country = await page.$eval(`${rowSelector} td:nth-child(2) span.text-slate-200`, el => el.innerText.trim().toUpperCase()).catch(() => "UNKNOWN");
-
         return { number, country, status: statusText };
     } catch (e) { return null; }
 }
@@ -284,7 +262,6 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
 async function getAllNumbersParallel(page, numToFetch) {
     const currentNumbers = [];
     const seen = new Set();
-    
     for (let i = 1; i <= numToFetch + 5; i++) {
         const res = await getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page);
         if (res && res.number && !seen.has(res.number)) {
@@ -294,10 +271,6 @@ async function getAllNumbersParallel(page, numToFetch) {
     }
     return currentNumbers;
 }
-
-// ==============================================================================
-// LOGIC UTAMA (PUPPETEER VERSION)
-// ==============================================================================
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
     const strId = String(userId);
@@ -318,7 +291,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
     let actionInterval = null;
     try {
-        let currentPos = userQueue.indexOf(strId);
         while (userQueue.indexOf(strId) > 0) {
             await tgEdit(userId, msgId, `⏳ <b>Menunggu di antrian active {${userQueue.indexOf(strId)}}</b>\nMohon tunggu..`);
             await new Promise(r => setTimeout(r, 2000));
@@ -337,7 +309,6 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         const INPUT_SELECTOR = "input[name='numberrange']";
         
         await page.waitForSelector(INPUT_SELECTOR, { visible: true, timeout: 10000 });
-        
         await page.click(INPUT_SELECTOR, { clickCount: 3 });
         await page.keyboard.press('Backspace');
         await page.type(INPUT_SELECTOR, prefix); 
@@ -411,24 +382,53 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 }
 
 // ==============================================================================
-// TELEGRAM LOOP & TASKS
+// TELEGRAM POLLING & TASK
 // ==============================================================================
 
 async function telegramLoop() {
     verifiedUsers = loadUsers();
-    let offset = 0;
-    await tgGetUpdates(-1);
-    console.log("[TELEGRAM] Polling started...");
+    
+    // --- LANGKAH PEMBERSIHAN PESAN LAMA ---
+    console.log("[TELEGRAM] Cleaning old updates...");
+    let updateResult = await tgGetUpdates(-1); 
+    let offset = (updateResult.result && updateResult.result.length > 0) 
+        ? updateResult.result[updateResult.result.length - 1].update_id + 1 
+        : 0;
+    
+    console.log("[TELEGRAM] Polling started from fresh state.");
 
     while (true) {
-        const data = await tgGetUpdates(offset);
-        if (data && data.result) {
-            for (const upd of data.result) {
-                offset = upd.update_id + 1;
-                // Logika Telegram di sini...
+        try {
+            const data = await tgGetUpdates(offset);
+            if (data && data.ok && data.result.length > 0) {
+                for (const upd of data.result) {
+                    offset = upd.update_id + 1;
+                    
+                    const msg = upd.message;
+                    const cb = upd.callback_query;
+
+                    if (msg && msg.text) {
+                        const userId = msg.from.id;
+                        const text = msg.text;
+                        saveUsers(userId);
+
+                        if (text === '/start') {
+                            await tgSend(userId, "Selamat datang di BOT STEX SMS!");
+                        }
+                        // Tambahkan handler command lainnya di sini...
+                    }
+
+                    if (cb) {
+                        const userId = cb.from.id;
+                        const dataCb = cb.data;
+                        // Handle Callback Query di sini...
+                    }
+                }
             }
+        } catch (err) {
+            console.error("[ERROR] Polling error:", err.message);
         }
-        await new Promise(r => setTimeout(r, 300)); 
+        await new Promise(r => setTimeout(r, 500)); 
     }
 }
 
@@ -440,68 +440,64 @@ async function expiryMonitorTask() {
             const updatedList = [];
             for (const item of waitList) {
                 if (now - item.timestamp > 1200) {
-                    await axios.post(`${API}/sendMessage`, { chat_id: item.user_id, text: `⚠️ Nomor ${item.number} expired.` });
+                    await axios.post(`${API}/sendMessage`, { chat_id: item.user_id, text: `⚠️ Nomor ${item.number} expired.` }).catch(() => {});
                 } else updatedList.push(item);
             }
             saveWaitList(updatedList);
         } catch (e) { }
-    }, 10000);
+    }, 30000);
 }
 
 function initializeFiles() {
-    [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE].forEach(f => { if (!fs.existsSync(f)) saveJson(f, []); });
-    if (!fs.existsSync(PROFILE_FILE)) saveJson(PROFILE_FILE, {});
+    [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE, PROFILE_FILE].forEach(f => { 
+        if (!fs.existsSync(f)) saveJson(f, f === PROFILE_FILE ? {} : []); 
+    });
 }
 
 // ==============================================================================
-// MAIN BOOTSTRAP (FIXED)
+// MAIN ENTRY POINT
 // ==============================================================================
 
 async function main() {
-    console.log("[INFO] Starting Puppeteer Bot on Termux...");
+    console.log("[SYSTEM] Initializing files and browser...");
     initializeFiles();
     
     let subProcesses = [];
     const forkOptions = { stdio: 'inherit' };
 
     try {
-        // Init Shared Browser
         const wsEndpoint = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = wsEndpoint;
-        console.log(`[INFO] Browser Server aktif di: ${wsEndpoint}`);
+        console.log(`[BROWSER] Active at: ${wsEndpoint}`);
 
-        // Forking sub-processes
         const smsProcess = fork('./sms.js', [], forkOptions);
         const rangeProcess = fork('./range.js', [], forkOptions);
         const messageProcess = fork('./message.js', [], forkOptions);
-        
         subProcesses = [smsProcess, rangeProcess, messageProcess];
 
+        // Jalankan Task Monitor & Polling
+        expiryMonitorTask();
+        await telegramLoop();
+
     } catch (err) {
-        console.error("[FATAL] Gagal Start Browser:", err);
+        console.error("[FATAL] Startup failed:", err);
         process.exit(1); 
     }
 
-    // Cron setup
+    // Auto Restart Browser jam 7 Pagi
     cron.schedule('0 7 * * *', async () => {
+        console.log("[SYSTEM] Daily Browser Restart...");
         const ws = await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = ws;
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
-    // Handle process exit
     process.on('SIGINT', () => {
+        console.log("[SYSTEM] Shutting down...");
         subProcesses.forEach(p => p.kill());
         process.exit(0);
     });
-
-    // Run core tasks
-    try { 
-        await Promise.all([ telegramLoop(), expiryMonitorTask() ]); 
-    } catch (e) { 
-        console.error("[ERROR] Task Error:", e);
-    } 
 }
 
 main();
