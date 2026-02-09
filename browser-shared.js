@@ -22,17 +22,20 @@ async function initSharedBrowser(email, password) {
         console.log("[SHARED] Meluncurkan Puppeteer (Chromium) Utama...");
         
         // Konfigurasi launch untuk Puppeteer
-        browser = await puppeteer.launch({
-            headless: HEADLESS_CONFIG.headless,
-            executablePath: '/usr/bin/chromium-browser', // Path standar Chromium di Termux
-            handleSIGINT: false,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--window-size=1280,720'
-            ]
-        });
+        // Di dalam file browser-shared.js
+browser = await puppeteer.launch({
+    headless: HEADLESS_CONFIG.headless,
+    // Gunakan path lengkap hasil temuan kamu tadi:
+    executablePath: '/data/data/com.termux/files/usr/bin/chromium-browser', 
+    handleSIGINT: false,
+    args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu' // Tambahkan ini agar lebih enteng di Termux
+    ]
+});
+
 
         sharedBrowserWSEndpoint = browser.wsEndpoint();
 
