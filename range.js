@@ -56,21 +56,26 @@ const formatLiveMessage = (rangeVal, count, country, service, msg) => {
 async function getSharedPage() {
     try {
         if (process.env.WS_ENDPOINT) {
-            // GUNAKAN chromium.connect BUKAN connectOverCDP
+            // Konek ke Browser Server
             const browser = await chromium.connect(process.env.WS_ENDPOINT);
-            // Ambil context pertama yang sudah ada (yang sudah login)
-            const context = browser.contexts()[0]; 
+            
+            // Cek apakah sudah ada context, jika tidak ada (kosong), buat baru
+            let context = browser.contexts()[0];
+            if (!context) {
+                context = await browser.newContext();
+            }
+            
             return await context.newPage();
         } else {
+            // Fallback jika dijalankan manual
             const { getNewPage } = require('./browser-shared');
             return await getNewPage();
         }
     } catch (e) {
-        console.error("❌ [RANGE] Gagal mendapatkan Page:", e.message);
+        console.error("❌ Gagal mendapatkan Page:", e.message);
         return null;
     }
 }
-
 
 const saveToInlineJson = (rangeVal, country, service) => {
     const sMap = { 'whatsapp': 'WA', 'facebook': 'FB' };
