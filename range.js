@@ -1,7 +1,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
+const puppeteer = require('puppeteer-core'); // Berubah ke puppeteer-core
 const { state } = require('./helpers/state'); 
 
 const CONFIG = {
@@ -17,7 +17,6 @@ let SENT_MESSAGES = new Map();
 let CACHE_SET = new Set();
 let MESSAGE_QUEUE = []; 
 let IS_PROCESSING_QUEUE = false; 
-const INLINE_JSON_PATH = path.join(__dirname, 'inline.json');
 
 let COUNTRY_EMOJI = {};
 try { COUNTRY_EMOJI = require('./country.json'); } catch (e) {}
@@ -37,16 +36,19 @@ const formatLiveMessage = (rangeVal, count, country, service, msg) => {
     return `🌤️<b>Live message new range</b>\n\n☎️Range    : ${header}\n${emoji} Country : ${country}\n📪 Service : ${service}\n\n🗯️Message Available :\n<blockquote>${escaped}</blockquote>`;
 };
 
+// --- LOGIKA KONEK PUPPETEER ---
 async function getSharedPage() {
     try {
         const wsAddr = process.env.WS_ENDPOINT || state.wsEndpoint;
-        const browser = await chromium.connect(wsAddr);
-        const context = browser.contexts()[0];
-        if (!context) return null;
+        if (!wsAddr) return null;
+
+        const browser = await puppeteer.connect({ browserWSEndpoint: wsAddr });
+        const page = await browser.newPage();
         
-        // Pastikan buka tab BARU, bukan pake tab yang lama
-        const page = await context.newPage();
-        console.log("📍 [RANGE] Berhasil buka Tab Baru untuk Console.");
+        // Set User Agent agar konsisten dengan main process
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36');
+        
+        console.log("📍 [RANGE] Berhasil buka Tab Baru Puppeteer untuk Console.");
         return page;
     } catch (e) {
         console.error("❌ [RANGE] Gagal buka tab:", e.message);
@@ -57,8 +59,7 @@ async function getSharedPage() {
 async function monitorTask() {
     console.log("🚀 [RANGE] Service Background Active (Wait for Browser...)");
     
-    // Tunggu sampai main.js siap
-    while (!(state.browser || process.env.WS_ENDPOINT)) {
+    while (!(process.env.WS_ENDPOINT || state.wsEndpoint)) {
         await new Promise(r => setTimeout(r, 2000));
     }
 
@@ -70,30 +71,45 @@ async function monitorTask() {
             if (!page || page.isClosed()) {
                 page = await getSharedPage();
                 if (!page) { await new Promise(r => setTimeout(r, 5000)); continue; }
-                await page.route('**/*.{png,jpg,jpeg,gif,svg}', r => r.abort());
+                
+                // Blokir gambar untuk hemat kuota/performa
+                await page.setRequestInterception(true);
+                page.on('request', (req) => {
+                    if (['image', 'font'].includes(req.resourceType())) req.abort();
+                    else req.continue();
+                });
             }
 
-            // Navigasi dengan timeout lebih lama
             if (!page.url().includes('/console')) {
-                await page.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'load', timeout: 60000 });
+                await page.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'networkidle2', timeout: 60000 });
                 console.log("📍 [RANGE] Navigasi ke Console sukses.");
             }
 
             const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
             await page.waitForSelector(CONSOLE_SELECTOR, { timeout: 15000 }).catch(() => {});
-            const elements = await page.locator(CONSOLE_SELECTOR).all();
+            
+            // Ambil data menggunakan evaluate agar lebih cepat dan stabil di Puppeteer
+            const dataItems = await page.evaluate((sel) => {
+                const elements = document.querySelectorAll(sel);
+                return Array.from(elements).map(el => {
+                    const countryRaw = el.querySelector(".flex-shrink-0 .text-\\[10px\\].text-slate-600.mt-1.font-mono")?.innerText || "";
+                    const serviceRaw = el.querySelector(".text-blue-400")?.innerText || "";
+                    const phoneRaw = el.querySelector(".font-mono:last-of-type")?.innerText || "";
+                    const msgRaw = el.querySelector("p")?.innerText || "";
+                    return { countryRaw, serviceRaw, phoneRaw, msgRaw };
+                });
+            }, CONSOLE_SELECTOR);
 
-            for (const el of elements) {
+            for (const item of dataItems) {
                 try {
-                    const rawC = await el.locator(".flex-shrink-0 .text-\\[10px\\].text-slate-600.mt-1.font-mono").innerText();
-                    const country = rawC.includes("•") ? rawC.split("•")[1].trim() : "Unknown";
+                    const country = item.countryRaw.includes("•") ? item.countryRaw.split("•")[1].trim() : "Unknown";
                     if (CONFIG.BANNED_COUNTRIES.includes(country.toLowerCase())) continue;
 
-                    const service = cleanServiceName(await el.locator(".text-blue-400").innerText());
+                    const service = cleanServiceName(item.serviceRaw);
                     if (!CONFIG.ALLOWED_SERVICES.some(s => service.toLowerCase().includes(s))) continue;
 
-                    const phone = cleanPhoneNumber(await el.locator(".font-mono").last().innerText());
-                    const fullMessage = (await el.locator("p").innerText()).replace('➜', '').trim();
+                    const phone = cleanPhoneNumber(item.phoneRaw);
+                    const fullMessage = item.msgRaw.replace('➜', '').trim();
 
                     if (phone.includes('XXX')) {
                         const cacheKey = `${phone}_${fullMessage.slice(0, 15)}`; 
@@ -104,7 +120,7 @@ async function monitorTask() {
                                 rangeVal: phone, country, service, count: cur.count + 1, 
                                 text: formatLiveMessage(phone, cur.count + 1, country, service, fullMessage) 
                             });
-                            // Panggil proses antrean
+                            
                             if (!IS_PROCESSING_QUEUE) processQueue();
                         }
                     }
@@ -118,7 +134,6 @@ async function monitorTask() {
     }
 }
 
-// Tambahin fungsi antrean dan save ke json biar komplit
 async function processQueue() {
     IS_PROCESSING_QUEUE = true;
     while (MESSAGE_QUEUE.length > 0) {
