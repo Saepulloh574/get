@@ -33,18 +33,25 @@ let monitorPage = null;
 const escapeHtml = (text) => (text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "");
 const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "🏴‍☠️");
 
+// --- FIX LOGIKA KONEK: PAKSA NUMPANG TAB ---
 async function getSharedPage() {
     try {
         const wsAddr = process.env.WS_ENDPOINT || state.wsEndpoint;
         if (wsAddr) {
             const browser = await chromium.connect(wsAddr);
-            const context = browser.contexts()[0] || await browser.newContext();
-            return await context.newPage();
+            // KUNCI: Paksa ambil context ke-0, jangan pernah buat newContext()
+            const contexts = browser.contexts();
+            if (contexts.length > 0) {
+                return await contexts[0].newPage(); 
+            }
+            return null;
         } 
         else if (state && state.browser) {
             const contexts = state.browser.contexts();
-            const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
-            return await context.newPage();
+            if (contexts.length > 0) {
+                return await contexts[0].newPage();
+            }
+            return null;
         } 
         else {
             console.error("❌ [MESSAGE] Browser instance tidak ditemukan.");
