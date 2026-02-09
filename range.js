@@ -58,23 +58,23 @@ const formatLiveMessage = (rangeVal, count, country, service, msg) => {
 // --- FUNGSI AMBIL PAGE (SUPPORT SHARED STATE & WS) ---
 async function getSharedPage() {
     try {
-        if (state && state.browser) {
+        const wsAddr = process.env.WS_ENDPOINT || state.wsEndpoint;
+        if (wsAddr) {
+            const browser = await chromium.connect(wsAddr);
+            const context = browser.contexts()[0] || await browser.newContext();
+            return await context.newPage();
+        } 
+        else if (state && state.browser) {
             const contexts = state.browser.contexts();
             const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
             return await context.newPage();
         } 
-        else if (process.env.WS_ENDPOINT) {
-            // Menggunakan connectOverCDP jika memungkinkan atau connect biasa
-            const browser = await chromium.connect(process.env.WS_ENDPOINT);
-            const context = browser.contexts()[0] || await browser.newContext();
-            return await context.newPage();
-        } 
         else {
-            console.error("❌ [RANGE] Tidak ada browser instance yang tersedia.");
+            console.error("❌ [RANGE] Browser instance tidak ditemukan.");
             return null;
         }
     } catch (e) {
-        console.error("❌ [RANGE] Gagal mendapatkan Page:", e.message);
+        console.error("❌ [RANGE] Gagal numpang tab:", e.message);
         return null;
     }
 }
@@ -102,6 +102,7 @@ async function processQueue() {
     while (MESSAGE_QUEUE.length > 0) {
         const item = MESSAGE_QUEUE.shift();
         try {
+            // Hapus pesan lama dari range yang sama jika ada (update mode)
             if (SENT_MESSAGES.has(item.rangeVal)) {
                 const old = SENT_MESSAGES.get(item.rangeVal);
                 await axios.post(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/deleteMessage`, {
@@ -154,7 +155,6 @@ async function monitorTask() {
                         await new Promise(r => setTimeout(r, 5000));
                         continue;
                     }
-                    // Optimasi: Blokir gambar biar tab ini gak boros RAM
                     await page.route('**/*.{png,jpg,jpeg,gif,svg}', route => route.abort());
                 }
 
@@ -162,7 +162,6 @@ async function monitorTask() {
                     await page.goto(CONFIG.DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
                 }
 
-                // Selector Dashboard Console StexSMS
                 const CONSOLE_SELECTOR = ".group.flex.flex-col.sm\\:flex-row.sm\\:items-start.gap-3.p-3.rounded-lg";
                 await page.waitForSelector(CONSOLE_SELECTOR, { timeout: 15000 }).catch(() => {});
                 
@@ -210,7 +209,6 @@ async function monitorTask() {
                     } catch (e) { continue; }
                 }
 
-                // Cleanup data lama setiap loop
                 const now = Date.now();
                 for (let [r, v] of SENT_MESSAGES.entries()) {
                     if (now - v.timestamp > 1800000) SENT_MESSAGES.delete(r);
@@ -222,10 +220,10 @@ async function monitorTask() {
                 page = null;
                 await new Promise(r => setTimeout(r, 10000));
             }
-            // Scan setiap 15 detik agar tidak membebani browser utama
             await new Promise(r => setTimeout(r, 15000));
         }
     }
 }
 
 monitorTask();
+                   
