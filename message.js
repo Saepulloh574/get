@@ -3,11 +3,14 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
+// Mengambil state global agar berbagi instance browser dengan main process
+const { state } = require('./helpers/state'); 
+
 // ==================== KONFIGURASI ====================
 const BOT_TOKEN = "7562117237:AAFQnb5aCmeSHHi_qAJz3vkoX4HbNGohe38";
 const CHAT_ID = "-1003492226491"; 
 const ADMIN_ID = "7184123643";
-const TELEGRAM_BOT_LINK = "https://t.me/myzuraisgoodbot"; // Sesuaikan dengan bot utama
+const TELEGRAM_BOT_LINK = "https://t.me/myzuraisgoodbot";
 const TELEGRAM_ADMIN_LINK = "https://t.me/Imr1d";
 
 const DASHBOARD_URL = "https://stexsms.com/mdashboard/getnum";
@@ -24,8 +27,6 @@ try {
 }
 
 let totalSent = 0;
-let lastUpdateId = 0;
-const startTime = Date.now();
 let monitorPage = null;
 
 // ==================== UTILS ====================
@@ -33,27 +34,27 @@ let monitorPage = null;
 const escapeHtml = (text) => (text ? text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") : "");
 const getCountryEmoji = (c) => (COUNTRY_EMOJI[c?.trim().toUpperCase()] || "🏴‍☠️");
 
-// --- FUNGSI AMBIL PAGE (SUPPORT MULTI-PROCESS / CDP) ---
+// --- FUNGSI AMBIL PAGE (SUPPORT SHARED STATE & WS) ---
 async function getSharedPage() {
     try {
-        if (process.env.WS_ENDPOINT) {
-            // Konek ke Browser Server
-            const browser = await chromium.connect(process.env.WS_ENDPOINT);
-            
-            // Cek apakah sudah ada context, jika tidak ada (kosong), buat baru
-            let context = browser.contexts()[0];
-            if (!context) {
-                context = await browser.newContext();
-            }
-            
+        // 1. Coba ambil dari Shared State (Memory yang sama)
+        if (state && state.browser) {
+            const contexts = state.browser.contexts();
+            const context = contexts.length > 0 ? contexts[0] : await state.browser.newContext();
             return await context.newPage();
-        } else {
-            // Fallback jika dijalankan manual
-            const { getNewPage } = require('./browser-shared');
-            return await getNewPage();
+        } 
+        // 2. Coba ambil dari WS_ENDPOINT (Jika dijalankan via Fork dengan Env)
+        else if (process.env.WS_ENDPOINT) {
+            const browser = await chromium.connect(process.env.WS_ENDPOINT);
+            const context = browser.contexts()[0] || await browser.newContext();
+            return await context.newPage();
+        } 
+        else {
+            console.error("❌ [MESSAGE] Browser instance tidak ditemukan di State atau Env.");
+            return null;
         }
     } catch (e) {
-        console.error("❌ Gagal mendapatkan Page:", e.message);
+        console.error("❌ [MESSAGE] Gagal mendapatkan Page:", e.message);
         return null;
     }
 }
@@ -91,7 +92,6 @@ function getUserData(phoneNumber) {
 
 function extractOtp(text) {
     if (!text) return null;
-    // Pattern yang lebih kuat untuk OTP FB/WA
     const patterns = [/(\d{3}[\s-]\d{3})/, /(?:code|otp|kode)[:\s]*([\d\s-]+)/i, /\b(\d{4,8})\b/];
     for (const p of patterns) {
         const m = text.match(p);
@@ -127,81 +127,88 @@ async function sendTelegram(text, otpCode = null, targetChat = CHAT_ID) {
 // ==================== MONITORING LOGIC ====================
 
 async function startSmsMonitor() {
-    console.log("🟢 [MESSAGE] Service Background Active (Shared Mode).");
+    console.log("🚀 [MESSAGE] Menunggu browser aktif dari proses utama...");
 
-    while (true) {
-        try {
-            if (!monitorPage || monitorPage.isClosed()) {
-                monitorPage = await getSharedPage();
-                if (!monitorPage) {
-                    await new Promise(r => setTimeout(r, 5000));
-                    continue;
+    // Polling nunggu browser ready di state
+    const checkState = setInterval(() => {
+        if (state.browser || process.env.WS_ENDPOINT) {
+            clearInterval(checkState);
+            console.log("✅ [MESSAGE] Browser terdeteksi. Memulai monitoring OTP...");
+            runMonitoringLoop();
+        }
+    }, 5000);
+
+    async function runMonitoringLoop() {
+        while (true) {
+            try {
+                if (!monitorPage || monitorPage.isClosed()) {
+                    monitorPage = await getSharedPage();
+                    if (!monitorPage) {
+                        await new Promise(r => setTimeout(r, 5000));
+                        continue;
+                    }
                 }
-            }
 
-            if (!monitorPage.url().includes('/getnum')) {
-                await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-            }
+                if (!monitorPage.url().includes('/getnum')) {
+                    await monitorPage.goto(DASHBOARD_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(() => {});
+                }
 
-            // --- INTERSEPSI API INFO ---
-            // Kita memantau traffic network untuk mencari data "/getnum/info"
-            const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 10000 }).catch(() => null);
-            
-            // Trigger refresh dengan klik header tabel secara simulasi
-            await monitorPage.click('th:has-text("Number Info")', { force: true }).catch(() => {});
-            
-            const response = await responsePromise;
-            if (response) {
-                const json = await response.json();
-                const numbers = json?.data?.numbers || [];
+                // --- INTERSEPSI API INFO ---
+                const responsePromise = monitorPage.waitForResponse(r => r.url().includes("/getnum/info"), { timeout: 10000 }).catch(() => null);
+                
+                // Trigger refresh klik header
+                await monitorPage.click('th:has-text("Number Info")', { force: true }).catch(() => {});
+                
+                const response = await responsePromise;
+                if (response) {
+                    const json = await response.json();
+                    const numbers = json?.data?.numbers || [];
 
-                for (const item of numbers) {
-                    // Cek jika ada pesan sukses dan ada isinya
-                    if (item.status === 'success' && item.message) {
-                        const otp = extractOtp(item.message);
-                        const phone = "+" + item.number;
-                        const key = `${otp}_${phone}`; // Gabungan OTP dan HP agar unik
-                        const cache = getCache();
+                    for (const item of numbers) {
+                        if (item.status === 'success' && item.message) {
+                            const otp = extractOtp(item.message);
+                            const phone = "+" + item.number;
+                            const key = `${otp}_${phone}`; 
+                            const cache = getCache();
 
-                        if (otp && !cache[key]) {
-                            cache[key] = { t: Date.now() };
-                            saveToCache(cache);
+                            if (otp && !cache[key]) {
+                                cache[key] = { t: Date.now() };
+                                saveToCache(cache);
 
-                            console.log(`✨ [MESSAGE] New OTP: ${otp} for ${phone}`);
+                                console.log(`✨ [MESSAGE] New OTP: ${otp} for ${phone}`);
 
-                            const user = getUserData(phone);
-                            const userTag = user.username !== "unknown" ? user.username : "User";
-                            const emoji = getCountryEmoji(item.country || "");
-                            
-                            const msg = `💭 <b>New Message Received</b>\n\n` +
-                                        `<b>👤 User:</b> ${userTag}\n` +
-                                        `<b>☎️ Number:</b> <code>${maskPhone(phone)}</code>\n` +
-                                        `<b>🌍 Country:</b> <b>${item.country || "N/A"} ${emoji}</b>\n` +
-                                        `<b>📪 Service:</b> <b>${item.full_number || "N/A"}</b>\n\n` +
-                                        `🔐 OTP: <code>${otp}</code>\n\n` +
-                                        `<b>FULL MESSAGE:</b>\n` +
-                                        `<blockquote>${escapeHtml(item.message)}</blockquote>`;
-                            
-                            await sendTelegram(msg, otp);
-                            totalSent++;
+                                const user = getUserData(phone);
+                                const userTag = user.username !== "unknown" ? user.username : "User";
+                                const emoji = getCountryEmoji(item.country || "");
+                                
+                                const msg = `💭 <b>New Message Received</b>\n\n` +
+                                            `<b>👤 User:</b> ${userTag}\n` +
+                                            `<b>☎️ Number:</b> <code>${maskPhone(phone)}</code>\n` +
+                                            `<b>🌍 Country:</b> <b>${item.country || "N/A"} ${emoji}</b>\n` +
+                                            `<b>📪 Service:</b> <b>${item.full_number || "N/A"}</b>\n\n` +
+                                            `🔐 OTP: <code>${otp}</code>\n\n` +
+                                            `<b>FULL MESSAGE:</b>\n` +
+                                            `<blockquote>${escapeHtml(item.message)}</blockquote>`;
+                                
+                                await sendTelegram(msg, otp);
+                                totalSent++;
 
-                            // Log ke smc.json
-                            let log = [];
-                            if (fs.existsSync(SMC_JSON_FILE)) try { log = JSON.parse(fs.readFileSync(SMC_JSON_FILE)); } catch(e){}
-                            log.push({ service: item.full_number, number: phone, otp, message: item.message, time: new Date().toLocaleString() });
-                            fs.writeFileSync(SMC_JSON_FILE, JSON.stringify(log.slice(-50), null, 2));
+                                let log = [];
+                                if (fs.existsSync(SMC_JSON_FILE)) try { log = JSON.parse(fs.readFileSync(SMC_JSON_FILE)); } catch(e){}
+                                log.push({ service: item.full_number, number: phone, otp, message: item.message, time: new Date().toLocaleString() });
+                                fs.writeFileSync(SMC_JSON_FILE, JSON.stringify(log.slice(-50), null, 2));
+                            }
                         }
                     }
                 }
+            } catch (e) {
+                console.error(`❌ [MESSAGE] Loop Error: ${e.message}`);
+                if (monitorPage) await monitorPage.close().catch(() => {});
+                monitorPage = null;
+                await new Promise(r => setTimeout(r, 10000));
             }
-        } catch (e) {
-            console.error(`❌ [MESSAGE] Loop Error: ${e.message}`);
-            if (monitorPage) await monitorPage.close().catch(() => {});
-            monitorPage = null;
-            await new Promise(r => setTimeout(r, 10000));
+            await new Promise(r => setTimeout(r, 8000)); 
         }
-        
-        await new Promise(r => setTimeout(r, 8000)); // Scan setiap 8 detik agar tidak terlalu berat
     }
 }
 
