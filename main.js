@@ -9,7 +9,7 @@ const { Mutex } = require('async-mutex');
 // --- STATE MANAGEMENT ---
 const { state } = require('./helpers/state');
 
-// --- IMPORT SHARED BROWSER ---
+// --- IMPORT SHARED BROWSER (Sekarang menggunakan Puppeteer) ---
 const { initSharedBrowser, getNewPage, restartBrowser } = require('./browser-shared.js');
 
 // Load Env
@@ -66,6 +66,7 @@ let waitingDanaInput = new Set();
 let pendingMessage = {};
 let lastUsedRange = {};
 
+// Progress Bar Config
 const MAX_BAR_LENGTH = 12;
 const FILLED_CHAR = "█";
 const EMPTY_CHAR = "░";
@@ -229,7 +230,6 @@ async function tgSendAction(chatId, action = "typing") {
 async function tgGetUpdates(offset) {
     try { const res = await axios.get(`${API}/getUpdates`, { params: { offset: offset, timeout: 5 } }); return res.data; } catch (e) { return { ok: false, result: [] }; }
 }
-
 async function isUserInBothGroups(userId) {
     const check = async (gid) => {
         try {
@@ -241,20 +241,42 @@ async function isUserInBothGroups(userId) {
     return g1 && g2;
 }
 
+async function tgBroadcast(messageText, adminId) {
+    const userIds = Array.from(loadUsers());
+    let success = 0, fail = 0;
+    let adminMsgId = await tgSend(adminId, `🔄 Siaran ke **${userIds.length}** pengguna...`);
+    for (let i = 0; i < userIds.length; i++) {
+        const uid = userIds[i];
+        if (i % 10 === 0 && adminMsgId) await tgEdit(adminId, adminMsgId, `🔄 Siaran: **${i}/${userIds.length}** (Sukses: ${success}, Gagal: ${fail})`);
+        const res = await axios.post(`${API}/sendMessage`, { chat_id: uid, text: messageText, parse_mode: "HTML" }).catch(e => null);
+        if (res && res.data.ok) success++; else fail++;
+        await new Promise(r => setTimeout(r, 50));
+    }
+    const report = `✅ Siaran Selesai!\n🟢 Sukses: <b>${success}</b>\n🔴 Gagal: <b>${fail}</b>`;
+    if (adminMsgId) await tgEdit(adminId, adminMsgId, report); else await tgSend(adminId, report);
+}
+
 // ==============================================================================
-// BROWSER HELPERS & CORE LOGIC
+// BROWSER HELPERS (CONVERTED TO PUPPETEER)
 // ==============================================================================
 
 async function getNumberAndCountryFromRow(rowSelector, page) {
     try {
         const row = await page.$(rowSelector);
         if (!row) return null;
+
+        // Ambil nomor telpon
         const numberRaw = await page.$eval(`${rowSelector} td:nth-child(1) span.font-mono`, el => el.innerText.trim()).catch(() => null);
         const number = numberRaw ? normalizeNumber(numberRaw) : null;
         if (!number || isInCache(number)) return null;
+
+        // Ambil status
         const statusText = await page.$eval(`${rowSelector} td:nth-child(1) div:nth-child(2) span`, el => el.innerText.trim().toLowerCase()).catch(() => "unknown");
         if (statusText.includes("success") || statusText.includes("failed")) return null;
+
+        // Ambil negara
         const country = await page.$eval(`${rowSelector} td:nth-child(2) span.text-slate-200`, el => el.innerText.trim().toUpperCase()).catch(() => "UNKNOWN");
+
         return { number, country, status: statusText };
     } catch (e) { return null; }
 }
@@ -262,6 +284,7 @@ async function getNumberAndCountryFromRow(rowSelector, page) {
 async function getAllNumbersParallel(page, numToFetch) {
     const currentNumbers = [];
     const seen = new Set();
+    
     for (let i = 1; i <= numToFetch + 5; i++) {
         const res = await getNumberAndCountryFromRow(`tbody tr:nth-child(${i})`, page);
         if (res && res.number && !seen.has(res.number)) {
@@ -271,6 +294,10 @@ async function getAllNumbersParallel(page, numToFetch) {
     }
     return currentNumbers;
 }
+
+// ==============================================================================
+// LOGIC UTAMA (PUPPETEER VERSION)
+// ==============================================================================
 
 async function processUserInput(userId, prefix, clickCount, usernameTg, firstNameTg, messageIdToEdit = null) {
     const strId = String(userId);
@@ -291,6 +318,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 
     let actionInterval = null;
     try {
+        let currentPos = userQueue.indexOf(strId);
         while (userQueue.indexOf(strId) > 0) {
             await tgEdit(userId, msgId, `⏳ <b>Menunggu di antrian active {${userQueue.indexOf(strId)}}</b>\nMohon tunggu..`);
             await new Promise(r => setTimeout(r, 2000));
@@ -309,6 +337,7 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
         const INPUT_SELECTOR = "input[name='numberrange']";
         
         await page.waitForSelector(INPUT_SELECTOR, { visible: true, timeout: 10000 });
+        
         await page.click(INPUT_SELECTOR, { clickCount: 3 });
         await page.keyboard.press('Backspace');
         await page.type(INPUT_SELECTOR, prefix); 
@@ -382,51 +411,98 @@ async function processUserInput(userId, prefix, clickCount, usernameTg, firstNam
 }
 
 // ==============================================================================
-// TELEGRAM POLLING & TASK
+// TELEGRAM LOOP & TASKS (INI YANG GUE PERBAIKI LOGICNYA SESUAI PERMINTAAN)
 // ==============================================================================
 
 async function telegramLoop() {
     verifiedUsers = loadUsers();
     
-    // --- LANGKAH PEMBERSIHAN PESAN LAMA ---
+    // --- CLEAR OLD MESSAGES LOGIC ---
     console.log("[TELEGRAM] Cleaning old updates...");
-    let updateResult = await tgGetUpdates(-1); 
-    let offset = (updateResult.result && updateResult.result.length > 0) 
-        ? updateResult.result[updateResult.result.length - 1].update_id + 1 
-        : 0;
+    let offset = 0;
+    // Set offset -1 to acknowledge all previous messages
+    let initUpdates = await axios.get(`${API}/getUpdates`, { params: { offset: -1 } });
+    if(initUpdates.data.result.length > 0) {
+        offset = initUpdates.data.result[0].update_id + 1;
+    }
     
-    console.log("[TELEGRAM] Polling started from fresh state.");
+    console.log("[TELEGRAM] Polling started (FRESH)...");
 
     while (true) {
         try {
-            const data = await tgGetUpdates(offset);
-            if (data && data.ok && data.result.length > 0) {
-                for (const upd of data.result) {
+            const res = await axios.get(`${API}/getUpdates`, { params: { offset: offset, timeout: 10 } });
+            
+            if (res.data.ok && res.data.result.length > 0) {
+                for (const upd of res.data.result) {
                     offset = upd.update_id + 1;
                     
                     const msg = upd.message;
                     const cb = upd.callback_query;
 
+                    // 1. Handle Message Text
                     if (msg && msg.text) {
-                        const userId = msg.from.id;
+                        const uid = msg.from.id;
                         const text = msg.text;
-                        saveUsers(userId);
+                        const username = msg.from.username;
+                        const firstName = msg.from.first_name;
 
-                        if (text === '/start') {
-                            await tgSend(userId, "Selamat datang di BOT STEX SMS!");
+                        saveUsers(uid);
+                        getUserProfile(uid, firstName);
+
+                        // CEK JOIN GRUP (Memakai fungsi asli isUserInBothGroups)
+                        const inGroups = await isUserInBothGroups(uid);
+                        if (!inGroups && uid !== ADMIN_ID) {
+                             await tgSend(uid, `⚠️ <b>Akses Ditolak</b>\nSilahkan join grup terlebih dahulu:\n1. <a href="${GROUP_LINK_1}">Grup 1</a>`);
+                             continue;
                         }
-                        // Tambahkan handler command lainnya di sini...
+
+                        if (text === '/start' || text.toLowerCase() === 'menu') {
+                            const ranges = loadInlineRanges();
+                            const kb = generateInlineKeyboard(ranges);
+                            await tgSend(uid, "<b>SELAMAT DATANG DI STEX SMS</b>\nSilahkan pilih menu:", kb);
+                        } 
+                        else if (manualRangeInput.has(uid)) {
+                            manualRangeInput.delete(uid);
+                            // Panggil fungsi utama processUserInput
+                            await processUserInput(uid, text, 1, username, firstName);
+                        }
                     }
 
+                    // 2. Handle Callback Query
                     if (cb) {
-                        const userId = cb.from.id;
-                        const dataCb = cb.data;
-                        // Handle Callback Query di sini...
+                        const uid = cb.from.id;
+                        const data = cb.data;
+                        const username = cb.from.username;
+                        const firstName = cb.from.first_name;
+
+                        // Answer Callback biar loading ilang
+                        await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: cb.id });
+
+                        if (data === 'manual_range') {
+                            manualRangeInput.add(uid);
+                            await tgSend(uid, "Silahkan input Prefix/Range (Contoh: 62818):");
+                        } 
+                        else if (data === 'getnum') {
+                            const ranges = loadInlineRanges();
+                            const kb = generateInlineKeyboard(ranges);
+                            await tgSend(uid, "Pilih Range:", kb);
+                        }
+                        else if (data.startsWith('select_range:')) {
+                            const prefix = data.split(':')[1];
+                            await processUserInput(uid, prefix, 1, username, firstName);
+                        }
+                        else if (data.startsWith('change_num:')) {
+                            const parts = data.split(':');
+                            const count = parseInt(parts[1]);
+                            const prefix = parts[2];
+                            // Pass message_id biar bisa diedit langsung
+                            await processUserInput(uid, prefix, count, username, firstName, cb.message.message_id);
+                        }
                     }
                 }
             }
-        } catch (err) {
-            console.error("[ERROR] Polling error:", err.message);
+        } catch(e) {
+            console.error("Polling Error:", e.message);
         }
         await new Promise(r => setTimeout(r, 500)); 
     }
@@ -440,64 +516,68 @@ async function expiryMonitorTask() {
             const updatedList = [];
             for (const item of waitList) {
                 if (now - item.timestamp > 1200) {
-                    await axios.post(`${API}/sendMessage`, { chat_id: item.user_id, text: `⚠️ Nomor ${item.number} expired.` }).catch(() => {});
+                    await axios.post(`${API}/sendMessage`, { chat_id: item.user_id, text: `⚠️ Nomor ${item.number} expired.` });
                 } else updatedList.push(item);
             }
             saveWaitList(updatedList);
         } catch (e) { }
-    }, 30000);
+    }, 10000);
 }
 
 function initializeFiles() {
-    [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE, PROFILE_FILE].forEach(f => { 
-        if (!fs.existsSync(f)) saveJson(f, f === PROFILE_FILE ? {} : []); 
-    });
+    [CACHE_FILE, INLINE_RANGE_FILE, AKSES_GET10_FILE, USER_FILE, WAIT_FILE].forEach(f => { if (!fs.existsSync(f)) saveJson(f, []); });
+    if (!fs.existsSync(PROFILE_FILE)) saveJson(PROFILE_FILE, {});
 }
 
 // ==============================================================================
-// MAIN ENTRY POINT
+// MAIN BOOTSTRAP (FIXED)
 // ==============================================================================
 
 async function main() {
-    console.log("[SYSTEM] Initializing files and browser...");
+    console.log("[INFO] Starting Puppeteer Bot on Termux...");
     initializeFiles();
     
     let subProcesses = [];
     const forkOptions = { stdio: 'inherit' };
 
     try {
+        // Init Shared Browser
         const wsEndpoint = await initSharedBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = wsEndpoint;
-        console.log(`[BROWSER] Active at: ${wsEndpoint}`);
+        console.log(`[INFO] Browser Server aktif di: ${wsEndpoint}`);
 
+        // Forking sub-processes
         const smsProcess = fork('./sms.js', [], forkOptions);
         const rangeProcess = fork('./range.js', [], forkOptions);
         const messageProcess = fork('./message.js', [], forkOptions);
+        
         subProcesses = [smsProcess, rangeProcess, messageProcess];
 
-        // Jalankan Task Monitor & Polling
-        expiryMonitorTask();
-        await telegramLoop();
-
     } catch (err) {
-        console.error("[FATAL] Startup failed:", err);
+        console.error("[FATAL] Gagal Start Browser:", err);
         process.exit(1); 
     }
 
-    // Auto Restart Browser jam 7 Pagi
+    // Cron setup
     cron.schedule('0 7 * * *', async () => {
-        console.log("[SYSTEM] Daily Browser Restart...");
         const ws = await restartBrowser(STEX_EMAIL, STEX_PASSWORD);
         state.wsEndpoint = ws;
         mainStandbyPage = await getNewPage();
         await mainStandbyPage.goto(TARGET_URL);
     }, { scheduled: true, timezone: "Asia/Jakarta" });
 
+    // Handle process exit
     process.on('SIGINT', () => {
-        console.log("[SYSTEM] Shutting down...");
         subProcesses.forEach(p => p.kill());
         process.exit(0);
     });
+
+    // Run core tasks
+    try { 
+        await Promise.all([ telegramLoop(), expiryMonitorTask() ]); 
+    } catch (e) { 
+        console.error("[ERROR] Task Error:", e);
+    } 
 }
 
 main();
